@@ -328,10 +328,13 @@ static UIViewController *rf_rootPresentingVC(UIViewController *vc) {
     cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightRegular];
     cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
 
-    // SF Symbol icon (iOS 13+)
-    UIImage *icon = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
-    if (!icon) icon = [UIImage systemImageNamed:@"gearshape"];
-    if (!icon) icon = [UIImage systemImageNamed:@"gear"];
+    // SF Symbol icon (iOS 13+), plain fallback for older deployments
+    UIImage *icon = nil;
+    if (@available(iOS 13.0, *)) {
+        icon = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
+        if (!icon) icon = [UIImage systemImageNamed:@"gearshape"];
+        if (!icon) icon = [UIImage systemImageNamed:@"gear"];
+    }
     cell.imageView.image      = icon;
     cell.imageView.tintColor  = tableView.tintColor ?: [UIColor systemBlueColor];
 
