@@ -230,105 +230,116 @@ static void redditFilter_presentSettings(UIViewController *fromVC) {
 }
 
 // ============================================================================
-// MARK: - INJECT "RedditFilter Settings" INTO THE NATIVE ACTION SHEET
-//
-// When the three-lines button is tapped inside the profile drawer, Reddit
-// presents a UIAlertController (action sheet style) with its native options.
-// We hook -[UIViewController presentViewController:animated:completion:] and,
-// whenever a UIAlertController of style ActionSheet is about to be presented
-// from a drawer VC, we append our custom "RedditFilter Settings" action before
-// letting the original presentation proceed.
+// MARK: - HELPER: find the top-most presentable VC
 // ============================================================================
 
-// Walk up the responder chain / parent chain to find the topmost presenting VC
-static UIViewController *rf_rootPresentingVC(UIViewController *vc) {
-    UIViewController *root = vc;
-    while (root.parentViewController) root = root.parentViewController;
-    UIViewController *presenter = root.presentingViewController;
-    if (presenter) {
-        while ([presenter isKindOfClass:[UINavigationController class]])
-            presenter = [(UINavigationController *)presenter topViewController];
-        return presenter;
-    }
-    return root;
+static UIViewController *rf_topPresentableVC(void) {
+    UIWindow *keyWindow = nil;
+    for (UIWindow *w in UIApplication.sharedApplication.windows)
+        if (w.isKeyWindow) { keyWindow = w; break; }
+    UIViewController *vc = keyWindow.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    if ([vc isKindOfClass:[UINavigationController class]])
+        vc = [(UINavigationController *)vc topViewController];
+    return vc;
 }
 
-// Returns YES if this VC is Reddit's profile / account drawer
-static BOOL rf_isDrawerVC(UIViewController *vc) {
-    NSString *n = NSStringFromClass(object_getClass(vc));
-    return [n containsString:@"Drawer"]          ||
-           [n containsString:@"Profile"]         ||
-           [n containsString:@"Account"]         ||
-           [n containsString:@"UserMenu"]        ||
-           [n containsString:@"SideMenu"]        ||
-           [n containsString:@"SlideOut"]        ||
-           [n containsString:@"AccountSwitcher"];
+// ============================================================================
+// MARK: - 3-FINGER LONG PRESS (always available as fallback)
+// ============================================================================
+
+%hook UIWindow
+
+- (void)becomeKeyWindow {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        UILongPressGestureRecognizer *g = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(redditFilter_handleThreeFingerPress:)];
+        g.numberOfTouchesRequired = 3;
+        g.minimumPressDuration    = 0.5;
+        [self addGestureRecognizer:g];
+        NSLog(@"[RedditFilter] 3-finger gesture installed");
+    });
 }
 
-%hook UIViewController
+%new
+- (void)redditFilter_handleThreeFingerPress:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    NSLog(@"[RedditFilter] 3-finger long press → opening settings");
+    redditFilter_presentSettings(rf_topPresentableVC());
+}
 
-- (void)presentViewController:(UIViewController *)viewControllerToPresent
-                     animated:(BOOL)animated
-                   completion:(void (^)(void))completion {
+%end
 
-    // Only act when the presenting VC is Reddit's profile drawer
-    if (!rf_isDrawerVC(self)) {
-        %orig;
-        return;
+// ============================================================================
+// MARK: - INJECT "RedditFilter Settings" INTO THE NATIVE ACTION SHEET
+//
+// Hook UIAlertController's -viewWillAppear: — fired unconditionally regardless
+// of who presents the controller — and inject our action whenever:
+//   • style is ActionSheet
+//   • the presenting VC chain contains a known drawer/profile VC
+//   • we haven't already injected (idempotency guard on the title)
+//
+// This is more reliable than hooking presentViewController: because SwiftUI
+// wrappers and UIPresentationControllers may bypass that method.
+// ============================================================================
+
+static BOOL rf_presenterChainContainsDrawer(UIViewController *vc) {
+    UIViewController *cursor = vc;
+    while (cursor) {
+        NSString *n = NSStringFromClass(object_getClass(cursor));
+        if ([n containsString:@"Drawer"]          ||
+            [n containsString:@"Profile"]         ||
+            [n containsString:@"Account"]         ||
+            [n containsString:@"UserMenu"]        ||
+            [n containsString:@"SideMenu"]        ||
+            [n containsString:@"SlideOut"]        ||
+            [n containsString:@"AccountSwitcher"]) return YES;
+        cursor = cursor.presentingViewController ?: cursor.parentViewController;
     }
+    return NO;
+}
 
-    // Only inject into UIAlertController action sheets
-    if (![viewControllerToPresent isKindOfClass:[UIAlertController class]]) {
-        %orig;
-        return;
-    }
+%hook UIAlertController
 
-    UIAlertController *alert = (UIAlertController *)viewControllerToPresent;
-    if (alert.preferredStyle != UIAlertControllerStyleActionSheet) {
-        %orig;
-        return;
-    }
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
 
-    NSLog(@"[RedditFilter] Injecting action into native action sheet from drawer VC: %@",
-          NSStringFromClass(object_getClass(self)));
+    if (self.preferredStyle != UIAlertControllerStyleActionSheet) return;
 
-    // Keep a weak reference to self for the block
-    __weak UIViewController *weakSelf = self;
+    // Idempotency guard
+    for (UIAlertAction *a in self.actions)
+        if ([a.title isEqualToString:@"RedditFilter Settings"]) return;
+
+    // Only inject when presented from Reddit's profile drawer chain
+    if (!rf_presenterChainContainsDrawer(self.presentingViewController)) return;
+
+    NSLog(@"[RedditFilter] Injecting into action sheet (presenter: %@)",
+          NSStringFromClass(object_getClass(self.presentingViewController)));
 
     UIAlertAction *filterAction = [UIAlertAction
         actionWithTitle:@"RedditFilter Settings"
                   style:UIAlertActionStyleDefault
                 handler:^(UIAlertAction *action) {
-                    UIViewController *presenter = rf_rootPresentingVC(weakSelf);
-                    redditFilter_presentSettings(presenter);
+                    redditFilter_presentSettings(rf_topPresentableVC());
                 }];
 
-    // Insert before the Cancel action (if any), otherwise append at the end
-    NSArray<UIAlertAction *> *existing = alert.actions;
-    BOOL hasCancelAtEnd = existing.count > 0 &&
-                          existing.lastObject.style == UIAlertActionStyleCancel;
+    // Insert before Cancel if present, otherwise append — via KVC since there
+    // is no public insertAction:atIndex: API on UIAlertController.
+    NSMutableArray *actions = [self.actions mutableCopy];
+    NSUInteger cancelIdx = NSNotFound;
+    for (NSUInteger i = 0; i < actions.count; i++)
+        if (((UIAlertAction *)actions[i]).style == UIAlertActionStyleCancel)
+            { cancelIdx = i; break; }
 
-    if (hasCancelAtEnd) {
-        // UIAlertController doesn't support inserting at index directly;
-        // we must re-add all actions in the desired order.
-        // Save existing actions, clear them, re-add with ours before Cancel.
-        NSMutableArray *nonCancel = [NSMutableArray array];
-        UIAlertAction *cancelAction = nil;
-        for (UIAlertAction *a in existing) {
-            if (a.style == UIAlertActionStyleCancel) cancelAction = a;
-            else [nonCancel addObject:a];
-        }
-        // UIAlertController has no public removeAction: API, so we use KVC
-        // to replace the actions array directly.
-        NSMutableArray *newActions = [NSMutableArray arrayWithArray:nonCancel];
-        [newActions addObject:filterAction];
-        if (cancelAction) [newActions addObject:cancelAction];
-        [alert setValue:newActions forKey:@"actions"];
-    } else {
-        [alert addAction:filterAction];
-    }
+    if (cancelIdx != NSNotFound)
+        [actions insertObject:filterAction atIndex:cancelIdx];
+    else
+        [actions addObject:filterAction];
 
-    %orig;
+    [self setValue:actions forKey:@"actions"];
 }
 
 %end
