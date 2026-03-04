@@ -87,7 +87,6 @@ static NSArray *filteredObjects(NSArray *objects) {
 
 static void filterNode(NSMutableDictionary *node) {
   if (![node isKindOfClass:NSMutableDictionary.class]) return;
-  // Regular post
   if ([node[@"__typename"] isEqualToString:@"SubredditPost"]) {
     if ([NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards]) {
       node[@"awardings"] = @[];
@@ -99,13 +98,11 @@ static void filterNode(NSMutableDictionary *node) {
         [node[@"isNsfw"] boolValue])
       node[@"isHidden"] = @YES;
   }
-  // CellGroup handling
   if ([node[@"__typename"] isEqualToString:@"CellGroup"]) {
     for (NSMutableDictionary *cell in node[@"cells"]) {
       if ([cell[@"__typename"] isEqualToString:@"ActionCell"]) {
         if ([NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards]) {
           cell[@"isAwardHidden"] = @YES;
-          // Fix: Check for NSNull before accessing nested dictionary
           id goldenUpvoteInfo = cell[@"goldenUpvoteInfo"];
           if ([goldenUpvoteInfo isKindOfClass:NSDictionary.class] &&
               ![goldenUpvoteInfo isEqual:[NSNull null]]) {
@@ -116,12 +113,10 @@ static void filterNode(NSMutableDictionary *node) {
           cell[@"isScoreHidden"] = @YES;
       }
     }
-    // Check for ads in CellGroup
     if ([NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted] &&
         [node[@"adPayload"] isKindOfClass:NSDictionary.class]) {
       node[@"cells"] = @[];
     }
-    // Check for recommendations in CellGroup
     if ([NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterRecommended] &&
         ![node[@"recommendationContext"] isEqual:[NSNull null]] &&
         [node[@"recommendationContext"] isKindOfClass:NSDictionary.class]) {
@@ -142,13 +137,11 @@ static void filterNode(NSMutableDictionary *node) {
       }
     }
   }
-  // Ad post
   if ([NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted]) {
     if ([node[@"__typename"] isEqualToString:@"AdPost"]) {
       node[@"isHidden"] = @YES;
     }
   }
-  // Comment
   if ([node[@"__typename"] isEqualToString:@"Comment"]) {
     if ([NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards]) {
       node[@"awardings"] = @[];
@@ -185,27 +178,21 @@ static void filterNode(NSMutableDictionary *node) {
                   root.allValues.firstObject[@"edges"])
                 for (NSMutableDictionary *edge in root.allValues.firstObject[@"edges"])
                   filterNode(edge[@"node"]);
-
               if (root[@"commentForest"])
                 for (NSMutableDictionary *tree in root[@"commentForest"][@"trees"])
                   filterNode(tree[@"node"]);
-
               if (root[@"commentsPageAds"] &&
                   [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted])
                 root[@"commentsPageAds"] = @[];
-
               if (root[@"commentTreeAds"] &&
                   [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted])
                 root[@"commentTreeAds"] = @[];
-
               if (root[@"pdpCommentsAds"] &&
                   [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted])
                 root[@"pdpCommentsAds"] = @[];
-
               if (root[@"recommendations"] &&
                   [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterRecommended])
                 root[@"recommendations"] = @[];
-
             } else if ([root isKindOfClass:NSArray.class]) {
               for (NSMutableDictionary *node in (NSArray *)root) filterNode(node);
             }
@@ -219,78 +206,168 @@ static void filterNode(NSMutableDictionary *node) {
 %end
 
 // ============================================================================
-// MARK: - 3-FINGER GESTURE IMPLEMENTATION
+// MARK: - HELPER: present RedditFilter settings
 // ============================================================================
 
-%hook UIWindow
+static void redditFilter_presentSettings(UIViewController *fromVC) {
+    Class filterVCClass = NSClassFromString(@"FeedFilterSettingsViewController");
+    if (!filterVCClass) {
+        NSLog(@"[RedditFilter] ERROR: FeedFilterSettingsViewController class not found");
+        return;
+    }
+    UIViewController *filterVC = [[filterVCClass alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc]
+        initWithRootViewController:filterVC];
 
-- (void)becomeKeyWindow {
-    %orig;
-    
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSLog(@"[RedditFilter] Installing 3-finger long press gesture recognizer");
-        
-        UILongPressGestureRecognizer *threeFingerGesture = [[UILongPressGestureRecognizer alloc]
-            initWithTarget:self
-            action:@selector(redditFilter_handleThreeFingerPress:)];
-        
-        threeFingerGesture.numberOfTouchesRequired = 3;
-        threeFingerGesture.minimumPressDuration = 0.5;
-        threeFingerGesture.delegate = (id<UIGestureRecognizerDelegate>)self;
-        
-        [self addGestureRecognizer:threeFingerGesture];
-        
-        NSLog(@"[RedditFilter] 3-finger gesture installed successfully");
-    });
-}
-
-%new
-- (void)redditFilter_handleThreeFingerPress:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        NSLog(@"[RedditFilter] 3-finger long press detected - opening filter settings");
-        
-        // Get the topmost view controller
-        UIViewController *rootVC = self.rootViewController;
-        UIViewController *topVC = rootVC;
-        
-        while (topVC.presentedViewController) {
-            topVC = topVC.presentedViewController;
-        }
-        
-        if ([topVC isKindOfClass:[UINavigationController class]]) {
-            topVC = [(UINavigationController *)topVC topViewController];
-        }
-        
-        // Get FeedFilterSettingsViewController class dynamically
-        Class filterVCClass = NSClassFromString(@"FeedFilterSettingsViewController");
-        if (!filterVCClass) {
-            NSLog(@"[RedditFilter] ERROR: FeedFilterSettingsViewController class not found");
-            return;
-        }
-        
-        UIViewController *filterVC = [[filterVCClass alloc] init];
-        UINavigationController *navController = [[UINavigationController alloc]
-            initWithRootViewController:filterVC];
-        
-        [topVC presentViewController:navController animated:YES completion:^{
-            NSLog(@"[RedditFilter] Filter settings presented successfully");
+    // If the drawer/sheet is currently presented, dismiss it first then show settings
+    if (fromVC.presentedViewController) {
+        [fromVC dismissViewControllerAnimated:YES completion:^{
+            [fromVC presentViewController:nav animated:YES completion:nil];
         }];
+    } else {
+        [fromVC presentViewController:nav animated:YES completion:nil];
     }
 }
 
-%new
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    
-    if ([gestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]]) {
-        UILongPressGestureRecognizer *longPress = (UILongPressGestureRecognizer *)gestureRecognizer;
-        if (longPress.numberOfTouchesRequired == 3) {
-            return NO;
+// ============================================================================
+// MARK: - INJECT "RedditFilter Settings" INTO THE PROFILE DRAWER TABLE VIEW
+//
+// Reddit's profile drawer is a UITableView (or a UICollectionView depending on
+// the app version).  The safest injection point is the data-source protocol:
+//
+//  • numberOfRowsInSection: → return orig + 1 for section 0
+//  • cellForRowAtIndexPath:  → return our custom cell for the last row
+//  • didSelectRowAtIndexPath: → open FeedFilterSettingsViewController
+//
+// We only act when the table view belongs to a VC whose class name matches
+// known Reddit profile / drawer class-name patterns, so we don't touch every
+// UITableView in the app.
+// ============================================================================
+
+// Associated-object key: stores the original row count so we know our row index
+static const void *kRFOrigRowCountKey = &kRFOrigRowCountKey;
+
+// Returns YES if the table view lives inside Reddit's profile/account drawer
+static BOOL rf_isProfileTableView(UITableView *tv) {
+    UIResponder *r = tv;
+    while ((r = r.nextResponder)) {
+        if (![r isKindOfClass:[UIViewController class]]) continue;
+        NSString *n = NSStringFromClass(object_getClass(r));
+        if ([n containsString:@"Drawer"]        ||
+            [n containsString:@"Profile"]       ||
+            [n containsString:@"Account"]       ||
+            [n containsString:@"UserMenu"]      ||
+            [n containsString:@"SideMenu"]      ||
+            [n containsString:@"SlideOut"]      ||
+            [n containsString:@"AccountSwitcher"]) {
+            return YES;
+        }
+        break; // stop at the first VC found
+    }
+    return NO;
+}
+
+// Walk up the responder chain to find a UIViewController
+static UIViewController *rf_owningVC(UIView *view) {
+    UIResponder *r = view;
+    while ((r = r.nextResponder))
+        if ([r isKindOfClass:[UIViewController class]])
+            return (UIViewController *)r;
+    return nil;
+}
+
+// Walk to the root presenting VC so we can present the settings sheet over everything
+static UIViewController *rf_rootPresentingVC(UIViewController *vc) {
+    UIViewController *root = vc;
+    // Go up to the top of the container hierarchy
+    while (root.parentViewController) root = root.parentViewController;
+    // The drawer is presented modally; we want the VC that presented it
+    UIViewController *presenter = root.presentingViewController;
+    if (presenter) {
+        // Resolve any nested nav controllers
+        while ([presenter isKindOfClass:[UINavigationController class]])
+            presenter = [(UINavigationController *)presenter topViewController];
+        return presenter;
+    }
+    return root;
+}
+
+%hook NSObject
+
+// ── numberOfRowsInSection: ──────────────────────────────────────────────────
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    NSInteger orig = %orig;
+    if (section != 0 || !rf_isProfileTableView(tableView)) return orig;
+
+    // Store the original count keyed to this table view instance
+    objc_setAssociatedObject(tableView,
+                             kRFOrigRowCountKey,
+                             @(orig),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return orig + 1; // add our row
+}
+
+// ── cellForRowAtIndexPath: ──────────────────────────────────────────────────
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+
+    if (indexPath.section != 0 || !rf_isProfileTableView(tableView)) return %orig;
+
+    NSNumber *origCount = objc_getAssociatedObject(tableView, kRFOrigRowCountKey);
+    if (!origCount || indexPath.row != origCount.integerValue) return %orig;
+
+    // ── Build our custom cell ──
+    static NSString *cellID = @"RedditFilterSettingsCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellID];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:cellID];
+    }
+
+    cell.textLabel.text = @"RedditFilter Settings";
+    cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightRegular];
+    cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
+
+    // SF Symbol icon (iOS 13+)
+    UIImage *icon = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
+    if (!icon) icon = [UIImage systemImageNamed:@"gearshape"];
+    if (!icon) icon = [UIImage systemImageNamed:@"gear"];
+    cell.imageView.image      = icon;
+    cell.imageView.tintColor  = tableView.tintColor ?: [UIColor systemBlueColor];
+
+    return cell;
+}
+
+// ── didSelectRowAtIndexPath: ────────────────────────────────────────────────
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section != 0 || !rf_isProfileTableView(tableView)) {
+        %orig;
+        return;
+    }
+    NSNumber *origCount = objc_getAssociatedObject(tableView, kRFOrigRowCountKey);
+    if (!origCount || indexPath.row != origCount.integerValue) {
+        %orig;
+        return;
+    }
+
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSLog(@"[RedditFilter] 'RedditFilter Settings' tapped in profile drawer");
+
+    UIViewController *ownerVC = rf_owningVC(tableView);
+    UIViewController *presenterVC = ownerVC ? rf_rootPresentingVC(ownerVC) : nil;
+
+    if (!presenterVC) {
+        // Last-resort: use the key window's root VC
+        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            if (!w.isKeyWindow) continue;
+            presenterVC = w.rootViewController;
+            while (presenterVC.presentedViewController)
+                presenterVC = presenterVC.presentedViewController;
+            break;
         }
     }
-    
-    return YES;
+
+    if (presenterVC) redditFilter_presentSettings(presenterVC);
 }
 
 %end
@@ -318,12 +395,10 @@ static void filterNode(NSMutableDictionary *node) {
 
 %hook PostDetailPresenter
 - (BOOL)shouldFetchCommentAdPost {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted] ? NO
-                                                                                : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted] ? NO : %orig;
 }
 - (BOOL)shouldFetchAdditionalCommentAdPosts {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted] ? NO
-                                                                                : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterPromoted] ? NO : %orig;
 }
 %end
 
@@ -346,49 +421,39 @@ static void filterNode(NSMutableDictionary *node) {
 
 %hook Post
 - (NSArray *)awardingTotals {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? nil
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? nil : %orig;
 }
 - (NSUInteger)totalAwardsReceived {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? 0
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? 0 : %orig;
 }
 - (BOOL)canAward {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? NO
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? NO : %orig;
 }
 - (BOOL)isScoreHidden {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterScores] ? YES
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterScores] ? YES : %orig;
 }
 %end
 
 %hook Comment
 - (NSArray *)awardingTotals {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? nil
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? nil : %orig;
 }
 - (NSUInteger)totalAwardsReceived {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? 0
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? 0 : %orig;
 }
 - (BOOL)canAward {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? NO
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? NO : %orig;
 }
 - (BOOL)shouldHighlightForHighAward {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? NO
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAwards] ? NO : %orig;
 }
 - (BOOL)isScoreHidden {
-  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterScores] ? YES
-                                                                              : %orig;
+  return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterScores] ? YES : %orig;
 }
 - (BOOL)shouldAutoCollapse {
   return [NSUserDefaults.standardUserDefaults boolForKey:kRedditFilterAutoCollapseAutoMod] &&
                  [((Comment *)self).authorPk isEqualToString:@"t2_6l4z3"]
-             ? YES
-             : %orig;
+             ? YES : %orig;
 }
 %end
 
@@ -436,8 +501,8 @@ static void filterNode(NSMutableDictionary *node) {
 %end
 
 %ctor {
-  NSLog(@"[RedditFilter] Initializing tweak with 3-finger gesture support");
-  
+  NSLog(@"[RedditFilter] Initializing - injecting entry into profile drawer menu");
+
   assetBundles = [NSMutableArray array];
   assetCatalogs = [NSMutableArray array];
   [assetBundles addObject:NSBundle.mainBundle];
@@ -455,21 +520,17 @@ static void filterNode(NSMutableDictionary *node) {
                                          stringByAppendingPathComponent:@"Frameworks"]
                                error:nil]) {
     if (![file hasSuffix:@"framework"]) continue;
-
     NSString *frameworkPath =
         [NSBundle.mainBundle pathForResource:[file stringByDeletingPathExtension]
                                       ofType:@"framework"
                                  inDirectory:@"Frameworks"];
     NSBundle *bundle = [NSBundle bundleWithPath:frameworkPath];
     if (bundle) [assetBundles addObject:bundle];
-
     for (NSString *file in [NSFileManager.defaultManager contentsOfDirectoryAtPath:frameworkPath
                                                                              error:nil]) {
       if (![file hasSuffix:@"bundle"]) continue;
-
       NSBundle *bundle =
           [NSBundle bundleWithPath:[frameworkPath stringByAppendingPathComponent:file]];
-
       if (bundle) [assetBundles addObject:bundle];
     }
   }
@@ -480,23 +541,23 @@ static void filterNode(NSMutableDictionary *node) {
                                                                     error:&error];
     if (!error) [assetCatalogs addObject:catalog];
   }
+
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
   if (![defaults objectForKey:kRedditFilterPromoted])
     [defaults setBool:true forKey:kRedditFilterPromoted];
-  if (![defaults objectForKey:kRedditFilterPromoted])
+  if (![defaults objectForKey:kRedditFilterRecommended])
     [defaults setBool:false forKey:kRedditFilterRecommended];
-  if (![defaults objectForKey:kRedditFilterPromoted])
+  if (![defaults objectForKey:kRedditFilterNSFW])
     [defaults setBool:false forKey:kRedditFilterNSFW];
-  if (![defaults objectForKey:kRedditFilterPromoted])
+  if (![defaults objectForKey:kRedditFilterAwards])
     [defaults setBool:false forKey:kRedditFilterAwards];
-  if (![defaults objectForKey:kRedditFilterPromoted])
+  if (![defaults objectForKey:kRedditFilterScores])
     [defaults setBool:false forKey:kRedditFilterScores];
-  if (![defaults objectForKey:kRedditFilterPromoted])
+  if (![defaults objectForKey:kRedditFilterAutoCollapseAutoMod])
     [defaults setBool:false forKey:kRedditFilterAutoCollapseAutoMod];
-  
-  NSLog(@"[RedditFilter] Tweak loaded successfully");
-  NSLog(@"[RedditFilter] To open settings: Hold 3 fingers on screen for 0.5 seconds");
-  
+
+  NSLog(@"[RedditFilter] Loaded - open the profile drawer to find 'RedditFilter Settings'");
+
   %init;
   %init(Legacy, Comment = CoreClass(@"Comment"), Post = CoreClass(@"Post"),
                    QuickActionViewModel = CoreClass(@"QuickActionViewModel"),
