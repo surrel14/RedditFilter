@@ -230,61 +230,22 @@ static void redditFilter_presentSettings(UIViewController *fromVC) {
 }
 
 // ============================================================================
-// MARK: - INJECT "RedditFilter Settings" INTO THE PROFILE DRAWER TABLE VIEW
+// MARK: - INJECT "RedditFilter Settings" INTO THE NATIVE ACTION SHEET
 //
-// Reddit's profile drawer is a UITableView (or a UICollectionView depending on
-// the app version).  The safest injection point is the data-source protocol:
-//
-//  • numberOfRowsInSection: → return orig + 1 for section 0
-//  • cellForRowAtIndexPath:  → return our custom cell for the last row
-//  • didSelectRowAtIndexPath: → open FeedFilterSettingsViewController
-//
-// We only act when the table view belongs to a VC whose class name matches
-// known Reddit profile / drawer class-name patterns, so we don't touch every
-// UITableView in the app.
+// When the three-lines button is tapped inside the profile drawer, Reddit
+// presents a UIAlertController (action sheet style) with its native options.
+// We hook -[UIViewController presentViewController:animated:completion:] and,
+// whenever a UIAlertController of style ActionSheet is about to be presented
+// from a drawer VC, we append our custom "RedditFilter Settings" action before
+// letting the original presentation proceed.
 // ============================================================================
 
-// Associated-object key: stores the original row count so we know our row index
-static const void *kRFOrigRowCountKey = &kRFOrigRowCountKey;
-
-// Returns YES if the table view lives inside Reddit's profile/account drawer
-static BOOL rf_isProfileTableView(UITableView *tv) {
-    UIResponder *r = tv;
-    while ((r = r.nextResponder)) {
-        if (![r isKindOfClass:[UIViewController class]]) continue;
-        NSString *n = NSStringFromClass(object_getClass(r));
-        if ([n containsString:@"Drawer"]        ||
-            [n containsString:@"Profile"]       ||
-            [n containsString:@"Account"]       ||
-            [n containsString:@"UserMenu"]      ||
-            [n containsString:@"SideMenu"]      ||
-            [n containsString:@"SlideOut"]      ||
-            [n containsString:@"AccountSwitcher"]) {
-            return YES;
-        }
-        break; // stop at the first VC found
-    }
-    return NO;
-}
-
-// Walk up the responder chain to find a UIViewController
-static UIViewController *rf_owningVC(UIView *view) {
-    UIResponder *r = view;
-    while ((r = r.nextResponder))
-        if ([r isKindOfClass:[UIViewController class]])
-            return (UIViewController *)r;
-    return nil;
-}
-
-// Walk to the root presenting VC so we can present the settings sheet over everything
+// Walk up the responder chain / parent chain to find the topmost presenting VC
 static UIViewController *rf_rootPresentingVC(UIViewController *vc) {
     UIViewController *root = vc;
-    // Go up to the top of the container hierarchy
     while (root.parentViewController) root = root.parentViewController;
-    // The drawer is presented modally; we want the VC that presented it
     UIViewController *presenter = root.presentingViewController;
     if (presenter) {
-        // Resolve any nested nav controllers
         while ([presenter isKindOfClass:[UINavigationController class]])
             presenter = [(UINavigationController *)presenter topViewController];
         return presenter;
@@ -292,85 +253,82 @@ static UIViewController *rf_rootPresentingVC(UIViewController *vc) {
     return root;
 }
 
-%hook NSObject
-
-// ── numberOfRowsInSection: ──────────────────────────────────────────────────
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    NSInteger orig = %orig;
-    if (section != 0 || !rf_isProfileTableView(tableView)) return orig;
-
-    // Store the original count keyed to this table view instance
-    objc_setAssociatedObject(tableView,
-                             kRFOrigRowCountKey,
-                             @(orig),
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return orig + 1; // add our row
+// Returns YES if this VC is Reddit's profile / account drawer
+static BOOL rf_isDrawerVC(UIViewController *vc) {
+    NSString *n = NSStringFromClass(object_getClass(vc));
+    return [n containsString:@"Drawer"]          ||
+           [n containsString:@"Profile"]         ||
+           [n containsString:@"Account"]         ||
+           [n containsString:@"UserMenu"]        ||
+           [n containsString:@"SideMenu"]        ||
+           [n containsString:@"SlideOut"]        ||
+           [n containsString:@"AccountSwitcher"];
 }
 
-// ── cellForRowAtIndexPath: ──────────────────────────────────────────────────
-- (UITableViewCell *)tableView:(UITableView *)tableView
-         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+%hook UIViewController
 
-    if (indexPath.section != 0 || !rf_isProfileTableView(tableView)) return %orig;
+- (void)presentViewController:(UIViewController *)viewControllerToPresent
+                     animated:(BOOL)animated
+                   completion:(void (^)(void))completion {
 
-    NSNumber *origCount = objc_getAssociatedObject(tableView, kRFOrigRowCountKey);
-    if (!origCount || indexPath.row != origCount.integerValue) return %orig;
-
-    // ── Build our custom cell ──
-    static NSString *cellID = @"RedditFilterSettingsCell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellID];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                      reuseIdentifier:cellID];
-    }
-
-    cell.textLabel.text = @"RedditFilter Settings";
-    cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightRegular];
-    cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
-
-    // SF Symbol icon (iOS 13+), plain fallback for older deployments
-    UIImage *icon = nil;
-    if (@available(iOS 13.0, *)) {
-        icon = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
-        if (!icon) icon = [UIImage systemImageNamed:@"gearshape"];
-        if (!icon) icon = [UIImage systemImageNamed:@"gear"];
-    }
-    cell.imageView.image      = icon;
-    cell.imageView.tintColor  = tableView.tintColor ?: [UIColor systemBlueColor];
-
-    return cell;
-}
-
-// ── didSelectRowAtIndexPath: ────────────────────────────────────────────────
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section != 0 || !rf_isProfileTableView(tableView)) {
-        %orig;
-        return;
-    }
-    NSNumber *origCount = objc_getAssociatedObject(tableView, kRFOrigRowCountKey);
-    if (!origCount || indexPath.row != origCount.integerValue) {
+    // Only act when the presenting VC is Reddit's profile drawer
+    if (!rf_isDrawerVC(self)) {
         %orig;
         return;
     }
 
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSLog(@"[RedditFilter] 'RedditFilter Settings' tapped in profile drawer");
+    // Only inject into UIAlertController action sheets
+    if (![viewControllerToPresent isKindOfClass:[UIAlertController class]]) {
+        %orig;
+        return;
+    }
 
-    UIViewController *ownerVC = rf_owningVC(tableView);
-    UIViewController *presenterVC = ownerVC ? rf_rootPresentingVC(ownerVC) : nil;
+    UIAlertController *alert = (UIAlertController *)viewControllerToPresent;
+    if (alert.preferredStyle != UIAlertControllerStyleActionSheet) {
+        %orig;
+        return;
+    }
 
-    if (!presenterVC) {
-        // Last-resort: use the key window's root VC
-        for (UIWindow *w in UIApplication.sharedApplication.windows) {
-            if (!w.isKeyWindow) continue;
-            presenterVC = w.rootViewController;
-            while (presenterVC.presentedViewController)
-                presenterVC = presenterVC.presentedViewController;
-            break;
+    NSLog(@"[RedditFilter] Injecting action into native action sheet from drawer VC: %@",
+          NSStringFromClass(object_getClass(self)));
+
+    // Keep a weak reference to self for the block
+    __weak UIViewController *weakSelf = self;
+
+    UIAlertAction *filterAction = [UIAlertAction
+        actionWithTitle:@"RedditFilter Settings"
+                  style:UIAlertActionStyleDefault
+                handler:^(UIAlertAction *action) {
+                    UIViewController *presenter = rf_rootPresentingVC(weakSelf);
+                    redditFilter_presentSettings(presenter);
+                }];
+
+    // Insert before the Cancel action (if any), otherwise append at the end
+    NSArray<UIAlertAction *> *existing = alert.actions;
+    BOOL hasCancelAtEnd = existing.count > 0 &&
+                          existing.lastObject.style == UIAlertActionStyleCancel;
+
+    if (hasCancelAtEnd) {
+        // UIAlertController doesn't support inserting at index directly;
+        // we must re-add all actions in the desired order.
+        // Save existing actions, clear them, re-add with ours before Cancel.
+        NSMutableArray *nonCancel = [NSMutableArray array];
+        UIAlertAction *cancelAction = nil;
+        for (UIAlertAction *a in existing) {
+            if (a.style == UIAlertActionStyleCancel) cancelAction = a;
+            else [nonCancel addObject:a];
         }
+        // UIAlertController has no public removeAction: API, so we use KVC
+        // to replace the actions array directly.
+        NSMutableArray *newActions = [NSMutableArray arrayWithArray:nonCancel];
+        [newActions addObject:filterAction];
+        if (cancelAction) [newActions addObject:cancelAction];
+        [alert setValue:newActions forKey:@"actions"];
+    } else {
+        [alert addAction:filterAction];
     }
 
-    if (presenterVC) redditFilter_presentSettings(presenterVC);
+    %orig;
 }
 
 %end
