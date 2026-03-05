@@ -535,13 +535,6 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     // Idempotency guard
     if (objc_getAssociatedObject(self, kRFCollectionPatchedKey)) return;
 
-    // Debug: log the bottom sheet frame and collection view frame
-    rf_log(@"BottomSheet frame: %@", NSStringFromCGRect(self.view.frame));
-    rf_log(@"BottomSheet bounds: %@", NSStringFromCGRect(self.view.bounds));
-    rf_log(@"safeAreaInsets: top=%f bottom=%f", self.view.safeAreaInsets.top, self.view.safeAreaInsets.bottom);
-    for (UIView *v in self.view.subviews)
-        rf_log(@"  subview: %@ frame: %@", NSStringFromClass(object_getClass(v)), NSStringFromCGRect(v.frame));
-
     UICollectionView *cv = rf_findCollectionViewInVC(self);
     if (!cv) {
         rf_log(@"BottomSheet: no UICollectionView found");
@@ -559,17 +552,34 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     cv.dataSource = wrapper;
     cv.delegate   = wrapper;
-
-    // Add bottom inset BEFORE reloadData so the extra cell is fully visible
-    // above the home bar. safeAreaInsets is reliable here in viewDidAppear.
-    CGFloat safeBottom = self.view.safeAreaInsets.bottom;
-    CGFloat extraPadding = 60.0;
-    UIEdgeInsets insets = cv.contentInset;
-    insets.bottom = safeBottom + extraPadding;
-    cv.contentInset = insets;
-    cv.scrollIndicatorInsets = UIEdgeInsetsMake(0, 0, safeBottom, 0);
-
     [cv reloadData];
+
+    // SwiftUI resets contentInset after reloadData, so we apply it on the
+    // next runloop tick when SwiftUI layout is complete.
+    UICollectionView *__weak weakCV = cv;
+    UIView *__weak weakView = self.view;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UICollectionView *cv = weakCV;
+        UIView *view = weakView;
+        if (!cv || !view) return;
+        CGFloat safeBottom = view.safeAreaInsets.bottom;
+        CGFloat extraPadding = 80.0;
+        UIEdgeInsets insets = cv.contentInset;
+        insets.bottom = safeBottom + extraPadding;
+        cv.contentInset = insets;
+        rf_log(@"contentInset applied: bottom=%f (safe=%f + extra=%f)",
+               insets.bottom, safeBottom, extraPadding);
+        // Scroll to bottom so our cell is visible
+        NSInteger lastSection = [cv numberOfSections] - 1;
+        NSInteger lastItem    = [cv numberOfItemsInSection:lastSection] - 1;
+        if (lastItem >= 0) {
+            NSIndexPath *last = [NSIndexPath indexPathForItem:lastItem inSection:lastSection];
+            [cv scrollToItemAtIndexPath:last
+                      atScrollPosition:UICollectionViewScrollPositionBottom
+                              animated:NO];
+        }
+    });
 }
 
 %end
