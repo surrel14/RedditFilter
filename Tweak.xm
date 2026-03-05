@@ -230,6 +230,66 @@ static void redditFilter_presentSettings(UIViewController *fromVC) {
 }
 
 // ============================================================================
+// MARK: - DEBUG: on-screen logger (no jailbreak / no file access needed)
+// Shows a UIAlert with the last N log lines whenever a presentation happens.
+// Tap "Copy" to copy the log to clipboard, then paste it anywhere.
+// ============================================================================
+
+static NSMutableArray<NSString *> *rf_debugLines;
+
+static void rf_log(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    NSLog(@"[RedditFilter] %@", msg);
+
+    if (!rf_debugLines) rf_debugLines = [NSMutableArray array];
+    NSString *timestamp = [NSDateFormatter
+        localizedStringFromDate:[NSDate date]
+                      dateStyle:NSDateFormatterNoStyle
+                      timeStyle:NSDateFormatterMediumStyle];
+    [rf_debugLines addObject:[NSString stringWithFormat:@"[%@] %@", timestamp, msg]];
+    // Keep last 60 lines
+    while (rf_debugLines.count > 60) [rf_debugLines removeObjectAtIndex:0];
+}
+
+static void rf_showDebugLog(void) {
+    NSString *logText = [rf_debugLines componentsJoinedByString:@"\n"] ?: @"(no logs yet)";
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"RedditFilter Debug Log"
+                         message:logText
+                  preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addAction:[UIAlertAction
+        actionWithTitle:@"Copy to Clipboard"
+                  style:UIAlertActionStyleDefault
+                handler:^(UIAlertAction *a) {
+                    [UIPasteboard generalPasteboard].string = logText;
+                }]];
+
+    [alert addAction:[UIAlertAction
+        actionWithTitle:@"Clear & Close"
+                  style:UIAlertActionStyleDestructive
+                handler:^(UIAlertAction *a) {
+                    [rf_debugLines removeAllObjects];
+                }]];
+
+    [alert addAction:[UIAlertAction
+        actionWithTitle:@"Close"
+                  style:UIAlertActionStyleCancel
+                handler:nil]];
+
+    UIViewController *top = nil;
+    for (UIWindow *w in UIApplication.sharedApplication.windows)
+        if (w.isKeyWindow) { top = w.rootViewController; break; }
+    while (top.presentedViewController) top = top.presentedViewController;
+    [top presentViewController:alert animated:YES completion:nil];
+}
+
+// ============================================================================
 // MARK: - DEBUG: log every presented VC and UIAlertController actions
 // ============================================================================
 
@@ -238,16 +298,16 @@ static void redditFilter_presentSettings(UIViewController *fromVC) {
 - (void)presentViewController:(UIViewController *)vc
                      animated:(BOOL)animated
                    completion:(void (^)(void))completion {
-    NSLog(@"[RedditFilter DEBUG] presentViewController: %@ → from: %@",
-          NSStringFromClass(object_getClass(vc)),
-          NSStringFromClass(object_getClass(self)));
+    rf_log(@"present: %@ from: %@",
+           NSStringFromClass(object_getClass(vc)),
+           NSStringFromClass(object_getClass(self)));
 
     if ([vc isKindOfClass:[UIAlertController class]]) {
         UIAlertController *alert = (UIAlertController *)vc;
-        NSLog(@"[RedditFilter DEBUG]   style=%ld title='%@' message='%@'",
-              (long)alert.preferredStyle, alert.title, alert.message);
+        rf_log(@"  AlertController style=%ld title='%@'",
+               (long)alert.preferredStyle, alert.title);
         for (UIAlertAction *a in alert.actions)
-            NSLog(@"[RedditFilter DEBUG]     action: '%@' style=%ld", a.title, (long)a.style);
+            rf_log(@"    action:'%@' style=%ld", a.title, (long)a.style);
     }
     %orig;
 }
@@ -279,21 +339,38 @@ static UIViewController *rf_topPresentableVC(void) {
     %orig;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        UILongPressGestureRecognizer *g = [[UILongPressGestureRecognizer alloc]
+        // Long press (1s) with 3 fingers → open RedditFilter settings
+        UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc]
             initWithTarget:self
-                    action:@selector(redditFilter_handleThreeFingerPress:)];
-        g.numberOfTouchesRequired = 3;
-        g.minimumPressDuration    = 0.5;
-        [self addGestureRecognizer:g];
-        NSLog(@"[RedditFilter] 3-finger gesture installed");
+                    action:@selector(redditFilter_handleThreeFingerLongPress:)];
+        longPress.numberOfTouchesRequired = 3;
+        longPress.minimumPressDuration    = 1.0;
+        [self addGestureRecognizer:longPress];
+
+        // Short press (0.1s) with 3 fingers → show debug log
+        UILongPressGestureRecognizer *shortPress = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(redditFilter_handleThreeFingerShortPress:)];
+        shortPress.numberOfTouchesRequired = 3;
+        shortPress.minimumPressDuration    = 0.1;
+        [self addGestureRecognizer:shortPress];
+
+        NSLog(@"[RedditFilter] 3-finger gestures installed");
     });
 }
 
 %new
-- (void)redditFilter_handleThreeFingerPress:(UILongPressGestureRecognizer *)g {
+- (void)redditFilter_handleThreeFingerLongPress:(UILongPressGestureRecognizer *)g {
     if (g.state != UIGestureRecognizerStateBegan) return;
-    NSLog(@"[RedditFilter] 3-finger long press → opening settings");
+    rf_log(@"3-finger long press → opening settings");
     redditFilter_presentSettings(rf_topPresentableVC());
+}
+
+%new
+- (void)redditFilter_handleThreeFingerShortPress:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    rf_log(@"3-finger short press → showing debug log");
+    rf_showDebugLog();
 }
 
 %end
