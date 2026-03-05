@@ -535,6 +535,13 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     // Idempotency guard
     if (objc_getAssociatedObject(self, kRFCollectionPatchedKey)) return;
 
+    // Debug: log the bottom sheet frame and collection view frame
+    rf_log(@"BottomSheet frame: %@", NSStringFromCGRect(self.view.frame));
+    rf_log(@"BottomSheet bounds: %@", NSStringFromCGRect(self.view.bounds));
+    rf_log(@"safeAreaInsets: top=%f bottom=%f", self.view.safeAreaInsets.top, self.view.safeAreaInsets.bottom);
+    for (UIView *v in self.view.subviews)
+        rf_log(@"  subview: %@ frame: %@", NSStringFromClass(object_getClass(v)), NSStringFromCGRect(v.frame));
+
     UICollectionView *cv = rf_findCollectionViewInVC(self);
     if (!cv) {
         rf_log(@"BottomSheet: no UICollectionView found");
