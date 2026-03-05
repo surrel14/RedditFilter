@@ -474,14 +474,6 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         tap.numberOfTapsRequired = 1;
         [cell addGestureRecognizer:tap];
 
-        // Push content up so our cell sits well above the home bar.
-        // safeAreaInsets.bottom is 34pt on Face ID devices, 0 on older ones.
-        CGFloat safeBottom = cv.safeAreaInsets.bottom;
-        CGFloat desiredBottom = safeBottom + 60;
-        UIEdgeInsets currentInsets = cv.contentInset;
-        if (currentInsets.bottom < desiredBottom)
-            cv.contentInset = UIEdgeInsetsMake(currentInsets.top, currentInsets.left,
-                                               desiredBottom, currentInsets.right);
         return cell;
     }
 
@@ -560,6 +552,16 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     cv.dataSource = wrapper;
     cv.delegate   = wrapper;
+
+    // Add bottom inset BEFORE reloadData so the extra cell is fully visible
+    // above the home bar. safeAreaInsets is reliable here in viewDidAppear.
+    CGFloat safeBottom = self.view.safeAreaInsets.bottom;
+    CGFloat extraPadding = 60.0;
+    UIEdgeInsets insets = cv.contentInset;
+    insets.bottom = safeBottom + extraPadding;
+    cv.contentInset = insets;
+    cv.scrollIndicatorInsets = UIEdgeInsetsMake(0, 0, safeBottom, 0);
+
     [cv reloadData];
 }
 
