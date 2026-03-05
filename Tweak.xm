@@ -554,31 +554,32 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     cv.delegate   = wrapper;
     [cv reloadData];
 
-    // SwiftUI resets contentInset after reloadData, so we apply it on the
-    // next runloop tick when SwiftUI layout is complete.
-    UICollectionView *__weak weakCV = cv;
-    UIView *__weak weakView = self.view;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+    // Expand the bottom sheet frame upward by 60pt to make room for our cell
+    // and move it away from the home bar. We do this after a short delay so
+    // SwiftUI's own layout pass has already completed.
+    UIViewController *__weak weakSelf = self;
+    UICollectionView *__weak weakCV   = cv;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        UIViewController *vc = weakSelf;
         UICollectionView *cv = weakCV;
-        UIView *view = weakView;
-        if (!cv || !view) return;
-        CGFloat safeBottom = view.safeAreaInsets.bottom;
-        CGFloat extraPadding = 80.0;
-        UIEdgeInsets insets = cv.contentInset;
-        insets.bottom = safeBottom + extraPadding;
-        cv.contentInset = insets;
-        rf_log(@"contentInset applied: bottom=%f (safe=%f + extra=%f)",
-               insets.bottom, safeBottom, extraPadding);
-        // Scroll to bottom so our cell is visible
-        NSInteger lastSection = [cv numberOfSections] - 1;
-        NSInteger lastItem    = [cv numberOfItemsInSection:lastSection] - 1;
-        if (lastItem >= 0) {
-            NSIndexPath *last = [NSIndexPath indexPathForItem:lastItem inSection:lastSection];
-            [cv scrollToItemAtIndexPath:last
-                      atScrollPosition:UICollectionViewScrollPositionBottom
-                              animated:NO];
-        }
+        if (!vc || !cv) return;
+
+        // Grow the sheet view upward by reducing its y origin and increasing height
+        CGRect f = vc.view.frame;
+        CGFloat expansion = 80.0;
+        f.origin.y    -= expansion;
+        f.size.height += expansion;
+        vc.view.frame = f;
+
+        // Also update the collection view frame to fill the new space
+        CGRect cvf = cv.frame;
+        cvf.size.height += expansion;
+        cv.frame = cvf;
+
+        rf_log(@"Sheet expanded: new frame %@, cv frame %@",
+               NSStringFromCGRect(vc.view.frame),
+               NSStringFromCGRect(cv.frame));
     });
 }
 
