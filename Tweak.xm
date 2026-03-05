@@ -435,6 +435,8 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:cellID
                                                                     forIndexPath:ip];
         for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
+        // Remove old gesture recognizers
+        for (UIGestureRecognizer *g in cell.gestureRecognizers) [cell removeGestureRecognizer:g];
 
         UIImageView *icon = [[UIImageView alloc] init];
         icon.translatesAutoresizingMaskIntoConstraints = NO;
@@ -464,6 +466,19 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
             [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-20],
         ]];
 
+        // Use a tap gesture recognizer — SwiftUI swallows didSelectItem so this is more reliable
+        cell.userInteractionEnabled = YES;
+        cell.contentView.userInteractionEnabled = YES;
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+            initWithTarget:self action:@selector(rfSettingsCellTapped:)];
+        tap.numberOfTapsRequired = 1;
+        [cell addGestureRecognizer:tap];
+
+        // Add bottom padding so the cell clears the home bar
+        UIEdgeInsets currentInsets = cv.contentInset;
+        if (currentInsets.bottom < 34)
+            cv.contentInset = UIEdgeInsetsMake(currentInsets.top, currentInsets.left,
+                                               34, currentInsets.right);
         return cell;
     }
 
@@ -476,12 +491,17 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
 
     if (ip.section == lastSection && ip.item == realOrig) {
         [cv deselectItemAtIndexPath:ip animated:YES];
-        rf_log(@"RedditFilter Settings tapped!");
+        rf_log(@"RedditFilter Settings tapped via didSelect!");
         redditFilter_presentSettings(rf_topPresentableVC());
         return;
     }
     if ([self.origDel respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)])
         [self.origDel collectionView:cv didSelectItemAtIndexPath:ip];
+}
+
+- (void)rfSettingsCellTapped:(UITapGestureRecognizer *)tap {
+    rf_log(@"RedditFilter Settings tapped via gesture recognizer!");
+    redditFilter_presentSettings(rf_topPresentableVC());
 }
 
 // Forward unknown messages to origDel to avoid crashes with SwiftUI internals
