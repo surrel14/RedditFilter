@@ -474,11 +474,14 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         tap.numberOfTapsRequired = 1;
         [cell addGestureRecognizer:tap];
 
-        // Add bottom padding so the cell clears the home bar
+        // Push content up so our cell sits well above the home bar.
+        // safeAreaInsets.bottom is 34pt on Face ID devices, 0 on older ones.
+        CGFloat safeBottom = cv.safeAreaInsets.bottom;
+        CGFloat desiredBottom = safeBottom + 60;
         UIEdgeInsets currentInsets = cv.contentInset;
-        if (currentInsets.bottom < 34)
+        if (currentInsets.bottom < desiredBottom)
             cv.contentInset = UIEdgeInsetsMake(currentInsets.top, currentInsets.left,
-                                               34, currentInsets.right);
+                                               desiredBottom, currentInsets.right);
         return cell;
     }
 
