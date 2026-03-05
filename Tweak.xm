@@ -230,6 +230,31 @@ static void redditFilter_presentSettings(UIViewController *fromVC) {
 }
 
 // ============================================================================
+// MARK: - DEBUG: log every presented VC and UIAlertController actions
+// ============================================================================
+
+%hook UIViewController
+
+- (void)presentViewController:(UIViewController *)vc
+                     animated:(BOOL)animated
+                   completion:(void (^)(void))completion {
+    NSLog(@"[RedditFilter DEBUG] presentViewController: %@ → from: %@",
+          NSStringFromClass(object_getClass(vc)),
+          NSStringFromClass(object_getClass(self)));
+
+    if ([vc isKindOfClass:[UIAlertController class]]) {
+        UIAlertController *alert = (UIAlertController *)vc;
+        NSLog(@"[RedditFilter DEBUG]   style=%ld title='%@' message='%@'",
+              (long)alert.preferredStyle, alert.title, alert.message);
+        for (UIAlertAction *a in alert.actions)
+            NSLog(@"[RedditFilter DEBUG]     action: '%@' style=%ld", a.title, (long)a.style);
+    }
+    %orig;
+}
+
+%end
+
+// ============================================================================
 // MARK: - HELPER: find the top-most presentable VC
 // ============================================================================
 
