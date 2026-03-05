@@ -376,72 +376,187 @@ static UIViewController *rf_topPresentableVC(void) {
 %end
 
 // ============================================================================
-// MARK: - INJECT "RedditFilter Settings" INTO THE NATIVE ACTION SHEET
+// MARK: - INJECT "RedditFilter Settings" INTO RPLBottomSheet
 //
-// Hook UIAlertController's -viewWillAppear: — fired unconditionally regardless
-// of who presents the controller — and inject our action whenever:
-//   • style is ActionSheet
-//   • the presenting VC chain contains a known drawer/profile VC
-//   • we haven't already injected (idempotency guard on the title)
+// Reddit uses RPLBottomSheetPanModalWrapperViewController (from RedditSliceKit)
+// instead of UIAlertController for its action menus.
+// We hook -[UIViewController viewDidAppear:] on that specific class and inject
+// a button into its view hierarchy, OR we hook the table/collection view
+// inside it to add an extra row — using the same approach as before but now
+// correctly targeted at the right VC class.
 //
-// This is more reliable than hooking presentViewController: because SwiftUI
-// wrappers and UIPresentationControllers may bypass that method.
+// Strategy: hook viewWillAppear: on any VC whose class name contains
+// "BottomSheet" presented from a "Profile" VC, find the UITableView or
+// UICollectionView inside it, and inject our row via the data source.
 // ============================================================================
 
-static BOOL rf_presenterChainContainsDrawer(UIViewController *vc) {
-    UIViewController *cursor = vc;
+// Associated-object key: marks data sources we have already patched
+static const void *kRFDataSourcePatchedKey = &kRFDataSourcePatchedKey;
+
+static BOOL rf_isBottomSheetFromProfileVC(UIViewController *vc) {
+    NSString *n = NSStringFromClass(object_getClass(vc));
+    if (![n containsString:@"BottomSheet"]) return NO;
+    // Check the presenter chain for a Profile VC
+    UIViewController *cursor = vc.presentingViewController;
     while (cursor) {
-        NSString *n = NSStringFromClass(object_getClass(cursor));
-        if ([n containsString:@"Drawer"]          ||
-            [n containsString:@"Profile"]         ||
-            [n containsString:@"Account"]         ||
-            [n containsString:@"UserMenu"]        ||
-            [n containsString:@"SideMenu"]        ||
-            [n containsString:@"SlideOut"]        ||
-            [n containsString:@"AccountSwitcher"]) return YES;
+        NSString *cn = NSStringFromClass(object_getClass(cursor));
+        if ([cn containsString:@"Profile"]  ||
+            [cn containsString:@"Drawer"]   ||
+            [cn containsString:@"Account"]  ||
+            [cn containsString:@"UserMenu"]) return YES;
         cursor = cursor.presentingViewController ?: cursor.parentViewController;
     }
     return NO;
 }
 
-%hook UIAlertController
+// Recursively find the first UITableView in a view hierarchy
+static UITableView *rf_findTableView(UIView *root) {
+    if ([root isKindOfClass:[UITableView class]]) return (UITableView *)root;
+    for (UIView *sub in root.subviews) {
+        UITableView *tv = rf_findTableView(sub);
+        if (tv) return tv;
+    }
+    return nil;
+}
 
-- (void)viewWillAppear:(BOOL)animated {
+// Associated-object keys for our injected data source wrapper
+static const void *kRFInjectedDataSourceKey = &kRFInjectedDataSourceKey;
+
+// ── Lightweight Objective-C wrapper that adds one extra row ──────────────────
+@interface RFTableViewDataSourceWrapper : NSObject <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) id<UITableViewDataSource> originalDataSource;
+@property (nonatomic, weak) id<UITableViewDelegate>   originalDelegate;
+@property (nonatomic, weak) UIViewController          *presentingVC;
+@end
+
+@implementation RFTableViewDataSourceWrapper
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv {
+    if ([self.originalDataSource respondsToSelector:@selector(numberOfSectionsInTableView:)])
+        return [self.originalDataSource numberOfSectionsInTableView:tv];
+    return 1;
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
+    NSInteger orig = [self.originalDataSource tableView:tv numberOfRowsInSection:section];
+    // Add our row only in the last section
+    NSInteger sections = [self numberOfSectionsInTableView:tv];
+    if (section == sections - 1) return orig + 1;
+    return orig;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    NSInteger sections = [self numberOfSectionsInTableView:tv];
+    NSInteger origRows = [self.originalDataSource tableView:tv
+                                     numberOfRowsInSection:ip.section];
+    // Our injected row is the last row of the last section
+    if (ip.section == sections - 1 && ip.row == origRows) {
+        static NSString *cellID = @"RFSettingsCell";
+        UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:cellID];
+        if (!cell)
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                          reuseIdentifier:cellID];
+        cell.textLabel.text = @"RedditFilter Settings";
+        cell.textLabel.font = [UIFont systemFontOfSize:16];
+        if (@available(iOS 13.0, *))
+            cell.imageView.image = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return cell;
+    }
+    return [self.originalDataSource tableView:tv cellForRowAtIndexPath:ip];
+}
+
+// Forward all other data source methods
+- (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip {
+    if ([self.originalDataSource respondsToSelector:@selector(tableView:canEditRowAtIndexPath:)])
+        return [self.originalDataSource tableView:tv canEditRowAtIndexPath:ip];
+    return NO;
+}
+
+// Forward delegate methods
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    NSInteger sections = [self numberOfSectionsInTableView:tv];
+    NSInteger origRows = [self.originalDataSource tableView:tv
+                                     numberOfRowsInSection:ip.section];
+    if (ip.section == sections - 1 && ip.row == origRows) {
+        [tv deselectRowAtIndexPath:ip animated:YES];
+        rf_log(@"RedditFilter Settings tapped in BottomSheet");
+        redditFilter_presentSettings(rf_topPresentableVC());
+        return;
+    }
+    if ([self.originalDelegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)])
+        [self.originalDelegate tableView:tv didSelectRowAtIndexPath:ip];
+}
+
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
+    NSInteger sections = [self numberOfSectionsInTableView:tv];
+    NSInteger origRows = [self.originalDataSource tableView:tv
+                                     numberOfRowsInSection:ip.section];
+    if (ip.section == sections - 1 && ip.row == origRows) return 50.0;
+    if ([self.originalDelegate respondsToSelector:@selector(tableView:heightForRowAtIndexPath:)])
+        return [self.originalDelegate tableView:tv heightForRowAtIndexPath:ip];
+    return UITableViewAutomaticDimension;
+}
+
+- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)section {
+    if ([self.originalDelegate respondsToSelector:@selector(tableView:viewForHeaderInSection:)])
+        return [self.originalDelegate tableView:tv viewForHeaderInSection:section];
+    return nil;
+}
+
+- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)section {
+    if ([self.originalDelegate respondsToSelector:@selector(tableView:heightForHeaderInSection:)])
+        return [self.originalDelegate tableView:tv heightForHeaderInSection:section];
+    return UITableViewAutomaticDimension;
+}
+
+- (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)section {
+    if ([self.originalDelegate respondsToSelector:@selector(tableView:viewForFooterInSection:)])
+        return [self.originalDelegate tableView:tv viewForFooterInSection:section];
+    return nil;
+}
+
+- (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)section {
+    if ([self.originalDelegate respondsToSelector:@selector(tableView:heightForFooterInSection:)])
+        return [self.originalDelegate tableView:tv heightForFooterInSection:section];
+    return UITableViewAutomaticDimension;
+}
+
+@end
+
+%hook UIViewController
+
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
 
-    if (self.preferredStyle != UIAlertControllerStyleActionSheet) return;
+    if (!rf_isBottomSheetFromProfileVC(self)) return;
+    rf_log(@"BottomSheet appeared: %@", NSStringFromClass(object_getClass(self)));
 
-    // Idempotency guard
-    for (UIAlertAction *a in self.actions)
-        if ([a.title isEqualToString:@"RedditFilter Settings"]) return;
+    // Already injected?
+    if (objc_getAssociatedObject(self, kRFInjectedDataSourceKey)) return;
 
-    // Only inject when presented from Reddit's profile drawer chain
-    if (!rf_presenterChainContainsDrawer(self.presentingViewController)) return;
+    UITableView *tv = rf_findTableView(self.view);
+    if (!tv) {
+        rf_log(@"  No UITableView found in BottomSheet — logging subviews:");
+        for (UIView *v in self.view.subviews)
+            rf_log(@"    subview: %@", NSStringFromClass(object_getClass(v)));
+        return;
+    }
 
-    NSLog(@"[RedditFilter] Injecting into action sheet (presenter: %@)",
-          NSStringFromClass(object_getClass(self.presentingViewController)));
+    rf_log(@"  Found UITableView, injecting data source wrapper");
 
-    UIAlertAction *filterAction = [UIAlertAction
-        actionWithTitle:@"RedditFilter Settings"
-                  style:UIAlertActionStyleDefault
-                handler:^(UIAlertAction *action) {
-                    redditFilter_presentSettings(rf_topPresentableVC());
-                }];
+    RFTableViewDataSourceWrapper *wrapper = [[RFTableViewDataSourceWrapper alloc] init];
+    wrapper.originalDataSource = tv.dataSource;
+    wrapper.originalDelegate   = tv.delegate;
+    wrapper.presentingVC       = self;
 
-    // Insert before Cancel if present, otherwise append — via KVC since there
-    // is no public insertAction:atIndex: API on UIAlertController.
-    NSMutableArray *actions = [self.actions mutableCopy];
-    NSUInteger cancelIdx = NSNotFound;
-    for (NSUInteger i = 0; i < actions.count; i++)
-        if (((UIAlertAction *)actions[i]).style == UIAlertActionStyleCancel)
-            { cancelIdx = i; break; }
+    // Retain wrapper via associated object on the VC
+    objc_setAssociatedObject(self, kRFInjectedDataSourceKey, wrapper,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    if (cancelIdx != NSNotFound)
-        [actions insertObject:filterAction atIndex:cancelIdx];
-    else
-        [actions addObject:filterAction];
-
-    [self setValue:actions forKey:@"actions"];
+    tv.dataSource = wrapper;
+    tv.delegate   = wrapper;
+    [tv reloadData];
 }
 
 %end
