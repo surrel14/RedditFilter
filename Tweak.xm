@@ -535,11 +535,45 @@ static const void *kRFInjectedDataSourceKey = &kRFInjectedDataSourceKey;
     // Already injected?
     if (objc_getAssociatedObject(self, kRFInjectedDataSourceKey)) return;
 
+    // Log all child VCs to understand the hierarchy
+    rf_log(@"  childVCs count: %lu", (unsigned long)self.childViewControllers.count);
+    for (UIViewController *child in self.childViewControllers)
+        rf_log(@"  childVC: %@", NSStringFromClass(object_getClass(child)));
+
+    // Search table view in self.view recursively (already done), then also
+    // search inside every child VC's view
     UITableView *tv = rf_findTableView(self.view);
+
     if (!tv) {
-        rf_log(@"  No UITableView found in BottomSheet — logging subviews:");
-        for (UIView *v in self.view.subviews)
-            rf_log(@"    subview: %@", NSStringFromClass(object_getClass(v)));
+        for (UIViewController *child in self.childViewControllers) {
+            rf_log(@"  searching in childVC: %@", NSStringFromClass(object_getClass(child)));
+            tv = rf_findTableView(child.view);
+            if (tv) { rf_log(@"  found UITableView in child!"); break; }
+
+            // If child is a nav controller, check its topViewController
+            if ([child isKindOfClass:[UINavigationController class]]) {
+                UIViewController *top = [(UINavigationController *)child topViewController];
+                rf_log(@"  NavController topVC: %@", NSStringFromClass(object_getClass(top)));
+                tv = rf_findTableView(top.view);
+                if (tv) { rf_log(@"  found UITableView in navController topVC!"); break; }
+
+                // Also log its subviews
+                for (UIView *v in top.view.subviews)
+                    rf_log(@"    topVC subview: %@", NSStringFromClass(object_getClass(v)));
+            }
+        }
+    }
+
+    if (!tv) {
+        rf_log(@"  No UITableView found anywhere — logging all subviews recursively:");
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:self.view];
+        while (queue.count) {
+            UIView *v = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            rf_log(@"    view: %@ frame:%@", NSStringFromClass(object_getClass(v)),
+                   NSStringFromCGRect(v.frame));
+            [queue addObjectsFromArray:v.subviews];
+        }
         return;
     }
 
