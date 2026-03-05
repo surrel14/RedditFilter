@@ -554,32 +554,28 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     cv.delegate   = wrapper;
     [cv reloadData];
 
-    // Expand the bottom sheet frame upward by 60pt to make room for our cell
-    // and move it away from the home bar. We do this after a short delay so
-    // SwiftUI's own layout pass has already completed.
-    UIViewController *__weak weakSelf = self;
-    UICollectionView *__weak weakCV   = cv;
+    // Scroll so our injected cell is visible and away from the home bar.
+    // We wait for SwiftUI layout to settle before scrolling.
+    UICollectionView *__weak weakCV = cv;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        UIViewController *vc = weakSelf;
         UICollectionView *cv = weakCV;
-        if (!vc || !cv) return;
-
-        // Grow the sheet view upward by reducing its y origin and increasing height
-        CGRect f = vc.view.frame;
-        CGFloat expansion = 80.0;
-        f.origin.y    -= expansion;
-        f.size.height += expansion;
-        vc.view.frame = f;
-
-        // Also update the collection view frame to fill the new space
-        CGRect cvf = cv.frame;
-        cvf.size.height += expansion;
-        cv.frame = cvf;
-
-        rf_log(@"Sheet expanded: new frame %@, cv frame %@",
-               NSStringFromCGRect(vc.view.frame),
-               NSStringFromCGRect(cv.frame));
+        if (!cv) return;
+        NSInteger lastSection = [cv numberOfSections] - 1;
+        NSInteger lastItem    = [cv numberOfItemsInSection:lastSection] - 1;
+        if (lastSection < 0 || lastItem < 0) return;
+        NSIndexPath *ip = [NSIndexPath indexPathForItem:lastItem inSection:lastSection];
+        UICollectionViewLayoutAttributes *attrs = [cv layoutAttributesForItemAtIndexPath:ip];
+        if (!attrs) return;
+        // Scroll so the cell's bottom is 80pt above the collection view bottom
+        CGFloat safeBottom  = cv.safeAreaInsets.bottom;
+        CGFloat cellBottom  = CGRectGetMaxY(attrs.frame);
+        CGFloat targetOffsetY = cellBottom - cv.bounds.size.height + safeBottom + 80.0;
+        if (targetOffsetY > cv.contentOffset.y) {
+            [cv setContentOffset:CGPointMake(0, targetOffsetY) animated:YES];
+            rf_log(@"Scrolled to offset y=%f (cellBottom=%f safeBottom=%f)",
+                   targetOffsetY, cellBottom, safeBottom);
+        }
     });
 }
 
