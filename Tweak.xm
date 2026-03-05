@@ -376,150 +376,123 @@ static UIViewController *rf_topPresentableVC(void) {
 %end
 
 // ============================================================================
-// MARK: - INJECT "RedditFilter Settings" INTO RPLBottomSheet
+// MARK: - INJECT "RedditFilter Settings" INTO RPLBottomSheet (SwiftUI List)
 //
-// Reddit uses RPLBottomSheetPanModalWrapperViewController (from RedditSliceKit)
-// instead of UIAlertController for its action menus.
-// We hook -[UIViewController viewDidAppear:] on that specific class and inject
-// a button into its view hierarchy, OR we hook the table/collection view
-// inside it to add an extra row — using the same approach as before but now
-// correctly targeted at the right VC class.
-//
-// Strategy: hook viewWillAppear: on any VC whose class name contains
-// "BottomSheet" presented from a "Profile" VC, find the UITableView or
-// UICollectionView inside it, and inject our row via the data source.
+// Reddit's bottom sheet uses a SwiftUI List backed by UICollectionView with
+// ListCollectionViewCell cells. We wrap the UICollectionView data source
+// and delegate to inject one extra cell at the end.
 // ============================================================================
 
-// Associated-object key: marks data sources we have already patched
-static const void *kRFDataSourcePatchedKey = &kRFDataSourcePatchedKey;
+static const void *kRFCollectionPatchedKey = &kRFCollectionPatchedKey;
 
-static BOOL rf_isBottomSheetFromProfileVC(UIViewController *vc) {
-    NSString *n = NSStringFromClass(object_getClass(vc));
-    if (![n containsString:@"BottomSheet"]) return NO;
-    // Check the presenter chain for a Profile VC
-    UIViewController *cursor = vc.presentingViewController;
-    while (cursor) {
-        NSString *cn = NSStringFromClass(object_getClass(cursor));
-        if ([cn containsString:@"Profile"]  ||
-            [cn containsString:@"Drawer"]   ||
-            [cn containsString:@"Account"]  ||
-            [cn containsString:@"UserMenu"]) return YES;
-        cursor = cursor.presentingViewController ?: cursor.parentViewController;
-    }
-    return NO;
-}
-
-// Recursively find the first UITableView in a view hierarchy
-static UITableView *rf_findTableView(UIView *root) {
-    if ([root isKindOfClass:[UITableView class]]) return (UITableView *)root;
+static UICollectionView *rf_findCollectionView(UIView *root) {
+    if ([root isKindOfClass:[UICollectionView class]]) return (UICollectionView *)root;
     for (UIView *sub in root.subviews) {
-        UITableView *tv = rf_findTableView(sub);
-        if (tv) return tv;
+        UICollectionView *cv = rf_findCollectionView(sub);
+        if (cv) return cv;
     }
     return nil;
 }
 
-// Associated-object keys for our injected data source wrapper
-static const void *kRFInjectedDataSourceKey = &kRFInjectedDataSourceKey;
+static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
+    UICollectionView *cv = rf_findCollectionView(vc.view);
+    if (cv) return cv;
+    for (UIViewController *child in vc.childViewControllers) {
+        cv = rf_findCollectionViewInVC(child);
+        if (cv) return cv;
+    }
+    return nil;
+}
 
-// ── Lightweight Objective-C wrapper that adds one extra row ──────────────────
-@interface RFTableViewDataSourceWrapper : NSObject <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, weak) id<UITableViewDataSource> originalDataSource;
-@property (nonatomic, weak) id<UITableViewDelegate>   originalDelegate;
-@property (nonatomic, weak) UIViewController          *presentingVC;
+@interface RFCollectionWrapper : NSObject <UICollectionViewDataSource, UICollectionViewDelegate>
+@property (nonatomic, weak) id<UICollectionViewDataSource> origDS;
+@property (nonatomic, weak) id<UICollectionViewDelegate>   origDel;
 @end
 
-@implementation RFTableViewDataSourceWrapper
+@implementation RFCollectionWrapper
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv {
-    if ([self.originalDataSource respondsToSelector:@selector(numberOfSectionsInTableView:)])
-        return [self.originalDataSource numberOfSectionsInTableView:tv];
+- (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)cv {
+    if ([self.origDS respondsToSelector:@selector(numberOfSectionsInCollectionView:)])
+        return [self.origDS numberOfSectionsInCollectionView:cv];
     return 1;
 }
 
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
-    NSInteger orig = [self.originalDataSource tableView:tv numberOfRowsInSection:section];
-    // Add our row only in the last section
-    NSInteger sections = [self numberOfSectionsInTableView:tv];
-    if (section == sections - 1) return orig + 1;
-    return orig;
+- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+    NSInteger orig = [self.origDS collectionView:cv numberOfItemsInSection:section];
+    NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
+    return (section == lastSection) ? orig + 1 : orig;
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    NSInteger sections = [self numberOfSectionsInTableView:tv];
-    NSInteger origRows = [self.originalDataSource tableView:tv
-                                     numberOfRowsInSection:ip.section];
-    // Our injected row is the last row of the last section
-    if (ip.section == sections - 1 && ip.row == origRows) {
+- (UICollectionViewCell *)collectionView:(UICollectionView *)cv
+                  cellForItemAtIndexPath:(NSIndexPath *)ip {
+    NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
+    // realOrig = original count before our +1
+    NSInteger realOrig = [self.origDS collectionView:cv numberOfItemsInSection:ip.section];
+
+    if (ip.section == lastSection && ip.item == realOrig) {
         static NSString *cellID = @"RFSettingsCell";
-        UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:cellID];
-        if (!cell)
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                          reuseIdentifier:cellID];
-        cell.textLabel.text = @"RedditFilter Settings";
-        cell.textLabel.font = [UIFont systemFontOfSize:16];
+        [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:cellID];
+        UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:cellID
+                                                                    forIndexPath:ip];
+        for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
+
+        UIImageView *icon = [[UIImageView alloc] init];
+        icon.translatesAutoresizingMaskIntoConstraints = NO;
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        if (@available(iOS 13.0, *)) {
+            icon.image = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
+            icon.tintColor = [UIColor labelColor];
+        }
+
+        UILabel *label = [[UILabel alloc] init];
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        label.text = @"RedditFilter Settings";
+        label.font = [UIFont systemFontOfSize:17];
         if (@available(iOS 13.0, *))
-            cell.imageView.image = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            label.textColor = [UIColor labelColor];
+
+        [cell.contentView addSubview:icon];
+        [cell.contentView addSubview:label];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:20],
+            [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [icon.widthAnchor constraintEqualToConstant:22],
+            [icon.heightAnchor constraintEqualToConstant:22],
+            [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
+            [label.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-20],
+        ]];
+
         return cell;
     }
-    return [self.originalDataSource tableView:tv cellForRowAtIndexPath:ip];
+
+    return [self.origDS collectionView:cv cellForItemAtIndexPath:ip];
 }
 
-// Forward all other data source methods
-- (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip {
-    if ([self.originalDataSource respondsToSelector:@selector(tableView:canEditRowAtIndexPath:)])
-        return [self.originalDataSource tableView:tv canEditRowAtIndexPath:ip];
-    return NO;
-}
+- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+    NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
+    NSInteger realOrig    = [self.origDS collectionView:cv numberOfItemsInSection:ip.section];
 
-// Forward delegate methods
-- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
-    NSInteger sections = [self numberOfSectionsInTableView:tv];
-    NSInteger origRows = [self.originalDataSource tableView:tv
-                                     numberOfRowsInSection:ip.section];
-    if (ip.section == sections - 1 && ip.row == origRows) {
-        [tv deselectRowAtIndexPath:ip animated:YES];
-        rf_log(@"RedditFilter Settings tapped in BottomSheet");
+    if (ip.section == lastSection && ip.item == realOrig) {
+        [cv deselectItemAtIndexPath:ip animated:YES];
+        rf_log(@"RedditFilter Settings tapped!");
         redditFilter_presentSettings(rf_topPresentableVC());
         return;
     }
-    if ([self.originalDelegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)])
-        [self.originalDelegate tableView:tv didSelectRowAtIndexPath:ip];
+    if ([self.origDel respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)])
+        [self.origDel collectionView:cv didSelectItemAtIndexPath:ip];
 }
 
-- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
-    NSInteger sections = [self numberOfSectionsInTableView:tv];
-    NSInteger origRows = [self.originalDataSource tableView:tv
-                                     numberOfRowsInSection:ip.section];
-    if (ip.section == sections - 1 && ip.row == origRows) return 50.0;
-    if ([self.originalDelegate respondsToSelector:@selector(tableView:heightForRowAtIndexPath:)])
-        return [self.originalDelegate tableView:tv heightForRowAtIndexPath:ip];
-    return UITableViewAutomaticDimension;
+// Forward unknown messages to origDel to avoid crashes with SwiftUI internals
+- (BOOL)respondsToSelector:(SEL)sel {
+    if ([super respondsToSelector:sel]) return YES;
+    return [self.origDel respondsToSelector:sel];
 }
 
-- (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)section {
-    if ([self.originalDelegate respondsToSelector:@selector(tableView:viewForHeaderInSection:)])
-        return [self.originalDelegate tableView:tv viewForHeaderInSection:section];
+- (id)forwardingTargetForSelector:(SEL)sel {
+    if ([self.origDel respondsToSelector:sel]) return self.origDel;
     return nil;
-}
-
-- (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)section {
-    if ([self.originalDelegate respondsToSelector:@selector(tableView:heightForHeaderInSection:)])
-        return [self.originalDelegate tableView:tv heightForHeaderInSection:section];
-    return UITableViewAutomaticDimension;
-}
-
-- (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)section {
-    if ([self.originalDelegate respondsToSelector:@selector(tableView:viewForFooterInSection:)])
-        return [self.originalDelegate tableView:tv viewForFooterInSection:section];
-    return nil;
-}
-
-- (CGFloat)tableView:(UITableView *)tv heightForFooterInSection:(NSInteger)section {
-    if ([self.originalDelegate respondsToSelector:@selector(tableView:heightForFooterInSection:)])
-        return [self.originalDelegate tableView:tv heightForFooterInSection:section];
-    return UITableViewAutomaticDimension;
 }
 
 @end
@@ -529,68 +502,42 @@ static const void *kRFInjectedDataSourceKey = &kRFInjectedDataSourceKey;
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
 
-    if (!rf_isBottomSheetFromProfileVC(self)) return;
-    rf_log(@"BottomSheet appeared: %@", NSStringFromClass(object_getClass(self)));
+    NSString *n = NSStringFromClass(object_getClass(self));
+    if (![n containsString:@"BottomSheet"]) return;
 
-    // Already injected?
-    if (objc_getAssociatedObject(self, kRFInjectedDataSourceKey)) return;
-
-    // Log all child VCs to understand the hierarchy
-    rf_log(@"  childVCs count: %lu", (unsigned long)self.childViewControllers.count);
-    for (UIViewController *child in self.childViewControllers)
-        rf_log(@"  childVC: %@", NSStringFromClass(object_getClass(child)));
-
-    // Search table view in self.view recursively (already done), then also
-    // search inside every child VC's view
-    UITableView *tv = rf_findTableView(self.view);
-
-    if (!tv) {
-        for (UIViewController *child in self.childViewControllers) {
-            rf_log(@"  searching in childVC: %@", NSStringFromClass(object_getClass(child)));
-            tv = rf_findTableView(child.view);
-            if (tv) { rf_log(@"  found UITableView in child!"); break; }
-
-            // If child is a nav controller, check its topViewController
-            if ([child isKindOfClass:[UINavigationController class]]) {
-                UIViewController *top = [(UINavigationController *)child topViewController];
-                rf_log(@"  NavController topVC: %@", NSStringFromClass(object_getClass(top)));
-                tv = rf_findTableView(top.view);
-                if (tv) { rf_log(@"  found UITableView in navController topVC!"); break; }
-
-                // Also log its subviews
-                for (UIView *v in top.view.subviews)
-                    rf_log(@"    topVC subview: %@", NSStringFromClass(object_getClass(v)));
-            }
-        }
+    // Check presenter chain for Profile VC
+    BOOL fromProfile = NO;
+    UIViewController *cursor = self.presentingViewController;
+    while (cursor) {
+        NSString *cn = NSStringFromClass(object_getClass(cursor));
+        if ([cn containsString:@"Profile"] || [cn containsString:@"Account"] ||
+            [cn containsString:@"Drawer"]  || [cn containsString:@"UserMenu"])
+            { fromProfile = YES; break; }
+        cursor = cursor.presentingViewController ?: cursor.parentViewController;
     }
+    if (!fromProfile) return;
 
-    if (!tv) {
-        rf_log(@"  No UITableView found anywhere — logging all subviews recursively:");
-        NSMutableArray *queue = [NSMutableArray arrayWithObject:self.view];
-        while (queue.count) {
-            UIView *v = queue.firstObject;
-            [queue removeObjectAtIndex:0];
-            rf_log(@"    view: %@ frame:%@", NSStringFromClass(object_getClass(v)),
-                   NSStringFromCGRect(v.frame));
-            [queue addObjectsFromArray:v.subviews];
-        }
+    // Idempotency guard
+    if (objc_getAssociatedObject(self, kRFCollectionPatchedKey)) return;
+
+    UICollectionView *cv = rf_findCollectionViewInVC(self);
+    if (!cv) {
+        rf_log(@"BottomSheet: no UICollectionView found");
         return;
     }
 
-    rf_log(@"  Found UITableView, injecting data source wrapper");
+    rf_log(@"BottomSheet: injecting into UICollectionView (items: %ld)",
+           (long)[cv.dataSource collectionView:cv numberOfItemsInSection:0]);
 
-    RFTableViewDataSourceWrapper *wrapper = [[RFTableViewDataSourceWrapper alloc] init];
-    wrapper.originalDataSource = tv.dataSource;
-    wrapper.originalDelegate   = tv.delegate;
-    wrapper.presentingVC       = self;
+    RFCollectionWrapper *wrapper = [[RFCollectionWrapper alloc] init];
+    wrapper.origDS  = cv.dataSource;
+    wrapper.origDel = cv.delegate;
 
-    // Retain wrapper via associated object on the VC
-    objc_setAssociatedObject(self, kRFInjectedDataSourceKey, wrapper,
+    objc_setAssociatedObject(self, kRFCollectionPatchedKey, wrapper,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    tv.dataSource = wrapper;
-    tv.delegate   = wrapper;
-    [tv reloadData];
+    cv.dataSource = wrapper;
+    cv.delegate   = wrapper;
+    [cv reloadData];
 }
 
 %end
