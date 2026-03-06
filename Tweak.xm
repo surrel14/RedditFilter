@@ -560,22 +560,27 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UICollectionView *cv = weakCV;
+        rf_log(@"dispatch_after fired, cv=%@", cv);
         if (!cv) return;
+        rf_log(@"cv.contentOffset=%@ cv.contentSize=%@ cv.bounds=%@ cv.safeAreaInsets.bottom=%f",
+               NSStringFromCGPoint(cv.contentOffset),
+               NSStringFromCGSize(cv.contentSize),
+               NSStringFromCGRect(cv.bounds),
+               cv.safeAreaInsets.bottom);
         NSInteger lastSection = [cv numberOfSections] - 1;
         NSInteger lastItem    = [cv numberOfItemsInSection:lastSection] - 1;
+        rf_log(@"lastSection=%ld lastItem=%ld", (long)lastSection, (long)lastItem);
         if (lastSection < 0 || lastItem < 0) return;
         NSIndexPath *ip = [NSIndexPath indexPathForItem:lastItem inSection:lastSection];
         UICollectionViewLayoutAttributes *attrs = [cv layoutAttributesForItemAtIndexPath:ip];
+        rf_log(@"attrs=%@ frame=%@", attrs, attrs ? NSStringFromCGRect(attrs.frame) : @"nil");
         if (!attrs) return;
-        // Scroll so the cell's bottom is 80pt above the collection view bottom
-        CGFloat safeBottom  = cv.safeAreaInsets.bottom;
-        CGFloat cellBottom  = CGRectGetMaxY(attrs.frame);
+        CGFloat safeBottom    = cv.safeAreaInsets.bottom;
+        CGFloat cellBottom    = CGRectGetMaxY(attrs.frame);
         CGFloat targetOffsetY = cellBottom - cv.bounds.size.height + safeBottom + 80.0;
-        if (targetOffsetY > cv.contentOffset.y) {
-            [cv setContentOffset:CGPointMake(0, targetOffsetY) animated:YES];
-            rf_log(@"Scrolled to offset y=%f (cellBottom=%f safeBottom=%f)",
-                   targetOffsetY, cellBottom, safeBottom);
-        }
+        rf_log(@"cellBottom=%f targetOffsetY=%f currentOffsetY=%f",
+               cellBottom, targetOffsetY, cv.contentOffset.y);
+        [cv setContentOffset:CGPointMake(0, targetOffsetY) animated:YES];
     });
 }
 
