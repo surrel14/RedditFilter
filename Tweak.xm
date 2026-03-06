@@ -420,14 +420,25 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
 - (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     NSInteger orig = [self.origDS collectionView:cv numberOfItemsInSection:section];
     NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
-    return (section == lastSection) ? orig + 1 : orig;
+    // Add our cell + a spacer item after it
+    return (section == lastSection) ? orig + 2 : orig;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv
                   cellForItemAtIndexPath:(NSIndexPath *)ip {
     NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
-    // realOrig = original count before our +1
     NSInteger realOrig = [self.origDS collectionView:cv numberOfItemsInSection:ip.section];
+
+    // Spacer cell (last item) — invisible, just takes up space above home bar
+    if (ip.section == lastSection && ip.item == realOrig + 1) {
+        static NSString *spacerID = @"RFSpacerCell";
+        [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:spacerID];
+        UICollectionViewCell *spacer = [cv dequeueReusableCellWithReuseIdentifier:spacerID
+                                                                      forIndexPath:ip];
+        spacer.backgroundColor = [UIColor clearColor];
+        spacer.userInteractionEnabled = NO;
+        return spacer;
+    }
 
     if (ip.section == lastSection && ip.item == realOrig) {
         static NSString *cellID = @"RFSettingsCell";
@@ -490,6 +501,9 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         redditFilter_presentSettings(rf_topPresentableVC());
         return;
     }
+    // Ignore taps on the spacer cell
+    if (ip.section == lastSection && ip.item == realOrig + 1) return;
+
     if ([self.origDel respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)])
         [self.origDel collectionView:cv didSelectItemAtIndexPath:ip];
 }
@@ -554,33 +568,21 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     cv.delegate   = wrapper;
     [cv reloadData];
 
-    // Scroll so our injected cell is visible and away from the home bar.
-    // We wait for SwiftUI layout to settle before scrolling.
+    // Scroll so our RedditFilter cell is centered and away from the home bar
     UICollectionView *__weak weakCV = cv;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UICollectionView *cv = weakCV;
-        rf_log(@"dispatch_after fired, cv=%@", cv);
         if (!cv) return;
-        rf_log(@"cv.contentOffset=%@ cv.contentSize=%@ cv.bounds=%@ cv.safeAreaInsets.bottom=%f",
-               NSStringFromCGPoint(cv.contentOffset),
-               NSStringFromCGSize(cv.contentSize),
-               NSStringFromCGRect(cv.bounds),
-               cv.safeAreaInsets.bottom);
         NSInteger lastSection = [cv numberOfSections] - 1;
-        NSInteger lastItem    = [cv numberOfItemsInSection:lastSection] - 1;
-        rf_log(@"lastSection=%ld lastItem=%ld", (long)lastSection, (long)lastItem);
-        if (lastSection < 0 || lastItem < 0) return;
-        NSIndexPath *ip = [NSIndexPath indexPathForItem:lastItem inSection:lastSection];
-        UICollectionViewLayoutAttributes *attrs = [cv layoutAttributesForItemAtIndexPath:ip];
-        rf_log(@"attrs=%@ frame=%@", attrs, attrs ? NSStringFromCGRect(attrs.frame) : @"nil");
-        if (!attrs) return;
-        CGFloat safeBottom    = cv.safeAreaInsets.bottom;
-        CGFloat cellBottom    = CGRectGetMaxY(attrs.frame);
-        CGFloat targetOffsetY = cellBottom - cv.bounds.size.height + safeBottom + 80.0;
-        rf_log(@"cellBottom=%f targetOffsetY=%f currentOffsetY=%f",
-               cellBottom, targetOffsetY, cv.contentOffset.y);
-        [cv setContentOffset:CGPointMake(0, targetOffsetY) animated:YES];
+        // Scroll to our settings cell (second-to-last, before spacer)
+        NSInteger settingsItem = [cv numberOfItemsInSection:lastSection] - 2;
+        if (settingsItem < 0) return;
+        NSIndexPath *ip = [NSIndexPath indexPathForItem:settingsItem inSection:lastSection];
+        [cv scrollToItemAtIndexPath:ip
+                   atScrollPosition:UICollectionViewScrollPositionCenteredVertically
+                           animated:YES];
+        rf_log(@"Scrolled to settings cell at %@", ip);
     });
 }
 
