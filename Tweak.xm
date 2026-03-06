@@ -419,27 +419,21 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
 
 - (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     NSInteger orig = [self.origDS collectionView:cv numberOfItemsInSection:section];
-    NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
-    return (section == lastSection) ? orig + 1 : orig;
+    // Add our cell only in section 0
+    return (section == 0) ? orig + 1 : orig;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv
                   cellForItemAtIndexPath:(NSIndexPath *)ip {
-    NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
-    NSInteger realOrig = [self.origDS collectionView:cv numberOfItemsInSection:ip.section];
 
-    if (ip.section == lastSection && ip.item == realOrig) {
+    // Our cell is always item 0 in section 0
+    if (ip.section == 0 && ip.item == 0) {
         static NSString *cellID = @"RFSettingsCell";
         [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:cellID];
         UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:cellID
                                                                     forIndexPath:ip];
         for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
         for (UIGestureRecognizer *g in cell.gestureRecognizers) [cell removeGestureRecognizer:g];
-
-        // Main row content
-        UIView *row = [[UIView alloc] init];
-        row.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:row];
 
         UIImageView *icon = [[UIImageView alloc] init];
         icon.translatesAutoresizingMaskIntoConstraints = NO;
@@ -456,43 +450,17 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         if (@available(iOS 13.0, *))
             label.textColor = [UIColor labelColor];
 
-        [row addSubview:icon];
-        [row addSubview:label];
-
-        // Invisible bottom padding to push cell content above home bar
-        UIView *bottomPad = [[UIView alloc] init];
-        bottomPad.translatesAutoresizingMaskIntoConstraints = NO;
-        bottomPad.backgroundColor = [UIColor clearColor];
-        bottomPad.userInteractionEnabled = NO;
-        [cell.contentView addSubview:bottomPad];
-
-        CGFloat safeBottom = cv.safeAreaInsets.bottom;
-        CGFloat padHeight  = safeBottom > 0 ? safeBottom + 20 : 20;
+        [cell.contentView addSubview:icon];
+        [cell.contentView addSubview:label];
 
         [NSLayoutConstraint activateConstraints:@[
-            // Row pinned to top of contentView
-            [row.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
-            [row.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
-            [row.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
-            [row.heightAnchor constraintEqualToConstant:48],
-
-            // Icon inside row
-            [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:20],
-            [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:20],
+            [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
             [icon.widthAnchor constraintEqualToConstant:22],
             [icon.heightAnchor constraintEqualToConstant:22],
-
-            // Label inside row
             [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
-            [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-            [label.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-20],
-
-            // Bottom padding below row
-            [bottomPad.topAnchor constraintEqualToAnchor:row.bottomAnchor],
-            [bottomPad.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
-            [bottomPad.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
-            [bottomPad.heightAnchor constraintEqualToConstant:padHeight],
-            [bottomPad.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
+            [label.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-20],
         ]];
 
         cell.userInteractionEnabled = YES;
@@ -505,21 +473,27 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         return cell;
     }
 
-    return [self.origDS collectionView:cv cellForItemAtIndexPath:ip];
+    // Shift all original index paths by 1 in section 0
+    NSIndexPath *origIP = (ip.section == 0)
+        ? [NSIndexPath indexPathForItem:ip.item - 1 inSection:ip.section]
+        : ip;
+    return [self.origDS collectionView:cv cellForItemAtIndexPath:origIP];
 }
 
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
-    NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
-    NSInteger realOrig    = [self.origDS collectionView:cv numberOfItemsInSection:ip.section];
-
-    if (ip.section == lastSection && ip.item == realOrig) {
+    // Our cell is item 0 in section 0
+    if (ip.section == 0 && ip.item == 0) {
         [cv deselectItemAtIndexPath:ip animated:YES];
         rf_log(@"RedditFilter Settings tapped via didSelect!");
         redditFilter_presentSettings(rf_topPresentableVC());
         return;
     }
+    // Shift original index paths back by 1 in section 0
+    NSIndexPath *origIP = (ip.section == 0)
+        ? [NSIndexPath indexPathForItem:ip.item - 1 inSection:ip.section]
+        : ip;
     if ([self.origDel respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)])
-        [self.origDel collectionView:cv didSelectItemAtIndexPath:ip];
+        [self.origDel collectionView:cv didSelectItemAtIndexPath:origIP];
 }
 
 - (void)rfSettingsCellTapped:(UITapGestureRecognizer *)tap {
