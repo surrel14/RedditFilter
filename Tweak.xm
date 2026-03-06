@@ -420,8 +420,7 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
 - (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     NSInteger orig = [self.origDS collectionView:cv numberOfItemsInSection:section];
     NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
-    // Add our cell + a spacer item after it
-    return (section == lastSection) ? orig + 2 : orig;
+    return (section == lastSection) ? orig + 1 : orig;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv
@@ -429,25 +428,18 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     NSInteger lastSection = [self numberOfSectionsInCollectionView:cv] - 1;
     NSInteger realOrig = [self.origDS collectionView:cv numberOfItemsInSection:ip.section];
 
-    // Spacer cell (last item) — invisible, just takes up space above home bar
-    if (ip.section == lastSection && ip.item == realOrig + 1) {
-        static NSString *spacerID = @"RFSpacerCell";
-        [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:spacerID];
-        UICollectionViewCell *spacer = [cv dequeueReusableCellWithReuseIdentifier:spacerID
-                                                                      forIndexPath:ip];
-        spacer.backgroundColor = [UIColor clearColor];
-        spacer.userInteractionEnabled = NO;
-        return spacer;
-    }
-
     if (ip.section == lastSection && ip.item == realOrig) {
         static NSString *cellID = @"RFSettingsCell";
         [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:cellID];
         UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:cellID
                                                                     forIndexPath:ip];
         for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
-        // Remove old gesture recognizers
         for (UIGestureRecognizer *g in cell.gestureRecognizers) [cell removeGestureRecognizer:g];
+
+        // Main row content
+        UIView *row = [[UIView alloc] init];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:row];
 
         UIImageView *icon = [[UIImageView alloc] init];
         icon.translatesAutoresizingMaskIntoConstraints = NO;
@@ -464,20 +456,45 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         if (@available(iOS 13.0, *))
             label.textColor = [UIColor labelColor];
 
-        [cell.contentView addSubview:icon];
-        [cell.contentView addSubview:label];
+        [row addSubview:icon];
+        [row addSubview:label];
+
+        // Invisible bottom padding to push cell content above home bar
+        UIView *bottomPad = [[UIView alloc] init];
+        bottomPad.translatesAutoresizingMaskIntoConstraints = NO;
+        bottomPad.backgroundColor = [UIColor clearColor];
+        bottomPad.userInteractionEnabled = NO;
+        [cell.contentView addSubview:bottomPad];
+
+        CGFloat safeBottom = cv.safeAreaInsets.bottom;
+        CGFloat padHeight  = safeBottom > 0 ? safeBottom + 20 : 20;
 
         [NSLayoutConstraint activateConstraints:@[
-            [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:20],
-            [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            // Row pinned to top of contentView
+            [row.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
+            [row.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+            [row.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
+            [row.heightAnchor constraintEqualToConstant:48],
+
+            // Icon inside row
+            [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:20],
+            [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
             [icon.widthAnchor constraintEqualToConstant:22],
             [icon.heightAnchor constraintEqualToConstant:22],
+
+            // Label inside row
             [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
-            [label.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-20],
+            [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [label.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-20],
+
+            // Bottom padding below row
+            [bottomPad.topAnchor constraintEqualToAnchor:row.bottomAnchor],
+            [bottomPad.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+            [bottomPad.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
+            [bottomPad.heightAnchor constraintEqualToConstant:padHeight],
+            [bottomPad.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
         ]];
 
-        // Use a tap gesture recognizer — SwiftUI swallows didSelectItem so this is more reliable
         cell.userInteractionEnabled = YES;
         cell.contentView.userInteractionEnabled = YES;
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
@@ -501,9 +518,6 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
         redditFilter_presentSettings(rf_topPresentableVC());
         return;
     }
-    // Ignore taps on the spacer cell
-    if (ip.section == lastSection && ip.item == realOrig + 1) return;
-
     if ([self.origDel respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)])
         [self.origDel collectionView:cv didSelectItemAtIndexPath:ip];
 }
@@ -567,23 +581,6 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     cv.dataSource = wrapper;
     cv.delegate   = wrapper;
     [cv reloadData];
-
-    // Scroll so our RedditFilter cell is centered and away from the home bar
-    UICollectionView *__weak weakCV = cv;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UICollectionView *cv = weakCV;
-        if (!cv) return;
-        NSInteger lastSection = [cv numberOfSections] - 1;
-        // Scroll to our settings cell (second-to-last, before spacer)
-        NSInteger settingsItem = [cv numberOfItemsInSection:lastSection] - 2;
-        if (settingsItem < 0) return;
-        NSIndexPath *ip = [NSIndexPath indexPathForItem:settingsItem inSection:lastSection];
-        [cv scrollToItemAtIndexPath:ip
-                   atScrollPosition:UICollectionViewScrollPositionCenteredVertically
-                           animated:YES];
-        rf_log(@"Scrolled to settings cell at %@", ip);
-    });
 }
 
 %end
