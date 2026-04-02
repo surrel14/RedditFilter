@@ -376,11 +376,15 @@ static UIViewController *rf_topPresentableVC(void) {
 %end
 
 // ============================================================================
-// MARK: - INJECT "RedditFilter Settings" INTO RPLBottomSheet (SwiftUI List)
+// MARK: - INJECT "RedditFilter Settings" INTO RPLBottomSheet
 //
-// Reddit's bottom sheet uses a SwiftUI List backed by UICollectionView with
-// ListCollectionViewCell cells. We wrap the UICollectionView data source
-// and delegate to inject one extra cell at the end.
+// Reddit now renders the account menu as a pure SwiftUI view inside
+// _TtGC14RedditSliceKit23RedditHostingControllerV29ProfileMyAccountSettings...
+// There is no UICollectionView or UITableView to hook anymore.
+//
+// Strategy: hook viewDidAppear: on any VC whose class name contains
+// "BottomSheet" presented from a Profile VC, find the SwiftUI hosting
+// controller child, and append a native UIButton at the bottom of its view.
 // ============================================================================
 
 static const void *kRFCollectionPatchedKey = &kRFCollectionPatchedKey;
@@ -404,115 +408,54 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     return nil;
 }
 
-@interface RFCollectionWrapper : NSObject <UICollectionViewDataSource, UICollectionViewDelegate>
-@property (nonatomic, weak) id<UICollectionViewDataSource> origDS;
-@property (nonatomic, weak) id<UICollectionViewDelegate>   origDel;
-@end
+// ── Button overlay approach for SwiftUI hosting controller ──────────────────
 
-@implementation RFCollectionWrapper
+static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *parentVC) {
+    // Avoid adding twice
+    for (UIView *v in hostingView.subviews)
+        if (v.tag == 0x5246) return; // 0x5246 = "RF"
 
-- (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)cv {
-    if ([self.origDS respondsToSelector:@selector(numberOfSectionsInCollectionView:)])
-        return [self.origDS numberOfSectionsInCollectionView:cv];
-    return 1;
-}
+    CGFloat safeBottom = hostingView.safeAreaInsets.bottom;
+    CGFloat btnHeight  = 50.0;
+    CGFloat btnY       = hostingView.bounds.size.height - btnHeight - safeBottom - 16.0;
 
-- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
-    NSInteger orig = [self.origDS collectionView:cv numberOfItemsInSection:section];
-    // Add our cell only in section 0
-    return (section == 0) ? orig + 1 : orig;
-}
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    btn.tag = 0x5246;
+    btn.frame = CGRectMake(0, btnY, hostingView.bounds.size.width, btnHeight);
+    btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
+    btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    btn.contentEdgeInsets = UIEdgeInsetsMake(0, 20, 0, 20);
 
-- (UICollectionViewCell *)collectionView:(UICollectionView *)cv
-                  cellForItemAtIndexPath:(NSIndexPath *)ip {
-
-    // Our cell is always item 0 in section 0
-    if (ip.section == 0 && ip.item == 0) {
-        static NSString *cellID = @"RFSettingsCell";
-        [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:cellID];
-        UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:cellID
-                                                                    forIndexPath:ip];
-        for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
-        for (UIGestureRecognizer *g in cell.gestureRecognizers) [cell removeGestureRecognizer:g];
-
-        UIImageView *icon = [[UIImageView alloc] init];
-        icon.translatesAutoresizingMaskIntoConstraints = NO;
-        icon.contentMode = UIViewContentModeScaleAspectFit;
-        if (@available(iOS 13.0, *)) {
-            icon.image = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
-            icon.tintColor = [UIColor labelColor];
-        }
-
-        UILabel *label = [[UILabel alloc] init];
-        label.translatesAutoresizingMaskIntoConstraints = NO;
-        label.text = @"RedditFilter Settings";
-        label.font = [UIFont systemFontOfSize:17];
-        if (@available(iOS 13.0, *))
-            label.textColor = [UIColor labelColor];
-
-        [cell.contentView addSubview:icon];
-        [cell.contentView addSubview:label];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:20],
-            [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [icon.widthAnchor constraintEqualToConstant:22],
-            [icon.heightAnchor constraintEqualToConstant:22],
-            [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
-            [label.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-20],
-        ]];
-
-        cell.userInteractionEnabled = YES;
-        cell.contentView.userInteractionEnabled = YES;
-        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
-            initWithTarget:self action:@selector(rfSettingsCellTapped:)];
-        tap.numberOfTapsRequired = 1;
-        [cell addGestureRecognizer:tap];
-
-        return cell;
+    if (@available(iOS 13.0, *)) {
+        UIImage *icon = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
+        [btn setImage:icon forState:UIControlStateNormal];
+        btn.tintColor = [UIColor labelColor];
+        [btn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
     }
+    [btn setTitle:@"  RedditFilter Settings" forState:UIControlStateNormal];
+    btn.titleLabel.font = [UIFont systemFontOfSize:17];
 
-    // Shift all original index paths by 1 in section 0
-    NSIndexPath *origIP = (ip.section == 0)
-        ? [NSIndexPath indexPathForItem:ip.item - 1 inSection:ip.section]
-        : ip;
-    return [self.origDS collectionView:cv cellForItemAtIndexPath:origIP];
+    // Separator line on top
+    UIView *separator = [[UIView alloc] initWithFrame:CGRectMake(0, 0,
+                                                                  hostingView.bounds.size.width,
+                                                                  0.5)];
+    separator.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    if (@available(iOS 13.0, *))
+        separator.backgroundColor = [UIColor separatorColor];
+    else
+        separator.backgroundColor = [UIColor lightGrayColor];
+    [btn addSubview:separator];
+
+    // Highlight on touch
+    [btn addTarget:btn action:@selector(rf_highlight) forControlEvents:UIControlEventTouchDown];
+
+    [btn addTarget:parentVC
+            action:@selector(redditFilter_settingsButtonTapped:)
+  forControlEvents:UIControlEventTouchUpInside];
+
+    [hostingView addSubview:btn];
+    rf_log(@"RedditFilter button added to SwiftUI hosting view");
 }
-
-- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
-    // Our cell is item 0 in section 0
-    if (ip.section == 0 && ip.item == 0) {
-        [cv deselectItemAtIndexPath:ip animated:YES];
-        rf_log(@"RedditFilter Settings tapped via didSelect!");
-        redditFilter_presentSettings(rf_topPresentableVC());
-        return;
-    }
-    // Shift original index paths back by 1 in section 0
-    NSIndexPath *origIP = (ip.section == 0)
-        ? [NSIndexPath indexPathForItem:ip.item - 1 inSection:ip.section]
-        : ip;
-    if ([self.origDel respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)])
-        [self.origDel collectionView:cv didSelectItemAtIndexPath:origIP];
-}
-
-- (void)rfSettingsCellTapped:(UITapGestureRecognizer *)tap {
-    rf_log(@"RedditFilter Settings tapped via gesture recognizer!");
-    redditFilter_presentSettings(rf_topPresentableVC());
-}
-
-// Forward unknown messages to origDel to avoid crashes with SwiftUI internals
-- (BOOL)respondsToSelector:(SEL)sel {
-    if ([super respondsToSelector:sel]) return YES;
-    return [self.origDel respondsToSelector:sel];
-}
-
-- (id)forwardingTargetForSelector:(SEL)sel {
-    if ([self.origDel respondsToSelector:sel]) return self.origDel;
-    return nil;
-}
-
-@end
 
 %hook UIViewController
 
@@ -536,36 +479,60 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
 
     // Idempotency guard
     if (objc_getAssociatedObject(self, kRFCollectionPatchedKey)) return;
+    objc_setAssociatedObject(self, kRFCollectionPatchedKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
+    // Try UICollectionView first (older Reddit versions)
     UICollectionView *cv = rf_findCollectionViewInVC(self);
-    if (!cv) {
-        rf_log(@"BottomSheet: no UICollectionView found — dumping full view hierarchy:");
-        NSMutableArray *queue = [NSMutableArray arrayWithObject:self.view];
-        while (queue.count) {
-            UIView *v = queue.firstObject;
-            [queue removeObjectAtIndex:0];
-            rf_log(@"  view: %@ frame:%@", NSStringFromClass(object_getClass(v)),
-                   NSStringFromCGRect(v.frame));
-            [queue addObjectsFromArray:v.subviews];
-        }
-        rf_log(@"BottomSheet: child VCs:");
-        for (UIViewController *child in self.childViewControllers)
-            rf_log(@"  childVC: %@", NSStringFromClass(object_getClass(child)));
+    if (cv) {
+        rf_log(@"BottomSheet: found UICollectionView, injecting wrapper");
+
+        RFCollectionWrapper *wrapper = [[RFCollectionWrapper alloc] init];
+        wrapper.origDS  = cv.dataSource;
+        wrapper.origDel = cv.delegate;
+
+        objc_setAssociatedObject(cv, kRFCollectionPatchedKey, wrapper,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        cv.dataSource = wrapper;
+        cv.delegate   = wrapper;
+        [cv reloadData];
         return;
     }
 
-    rf_log(@"BottomSheet: injecting into UICollectionView (items: %ld)",
-           (long)[cv.dataSource collectionView:cv numberOfItemsInSection:0]);
+    // Newer Reddit: pure SwiftUI — find the hosting controller child and overlay a button
+    rf_log(@"BottomSheet: no UICollectionView, trying SwiftUI hosting controller overlay");
+    for (UIViewController *child in self.childViewControllers) {
+        NSString *cn = NSStringFromClass(object_getClass(child));
+        if ([cn containsString:@"HostingController"] || [cn containsString:@"HostingView"]) {
+            rf_log(@"Found hosting controller: %@", cn);
+            UIViewController *__weak weakSelf = self;
+            UIView *__weak weakView = child.view;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                UIView *v = weakView;
+                UIViewController *vc = weakSelf;
+                if (!v || !vc) return;
+                rf_addSettingsButtonToView(v, vc);
+            });
+            return;
+        }
+    }
 
-    RFCollectionWrapper *wrapper = [[RFCollectionWrapper alloc] init];
-    wrapper.origDS  = cv.dataSource;
-    wrapper.origDel = cv.delegate;
+    // Fallback: add button directly to self.view
+    rf_log(@"BottomSheet: no hosting controller found, adding button to self.view");
+    UIViewController *__weak weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIViewController *vc = weakSelf;
+        if (!vc) return;
+        rf_addSettingsButtonToView(vc.view, vc);
+    });
+}
 
-    objc_setAssociatedObject(self, kRFCollectionPatchedKey, wrapper,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    cv.dataSource = wrapper;
-    cv.delegate   = wrapper;
-    [cv reloadData];
+%new
+- (void)redditFilter_settingsButtonTapped:(UIButton *)sender {
+    rf_log(@"RedditFilter Settings tapped via overlay button!");
+    redditFilter_presentSettings(rf_topPresentableVC());
 }
 
 %end
