@@ -511,9 +511,12 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     for (UIView *v in hostingView.subviews)
         if (v.tag == 0x5246) return;
 
-    CGFloat safeBottom = hostingView.safeAreaInsets.bottom;
     CGFloat btnHeight  = 50.0;
-    CGFloat btnY       = hostingView.bounds.size.height - btnHeight - safeBottom - 16.0;
+    // Position the button using layoutMargins/safeArea so it sits
+    // just above the home bar indicator
+    CGFloat safeBottom = hostingView.safeAreaInsets.bottom;
+    // The button should be placed relative to the safe area bottom
+    CGFloat btnY = hostingView.bounds.size.height - safeBottom - btnHeight;
 
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
     btn.tag = 0x5246;
@@ -522,15 +525,11 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
     btn.contentEdgeInsets = UIEdgeInsetsMake(0, 20, 0, 20);
 
-    // Solid background so it's always visible on top of SwiftUI content
     if (@available(iOS 13.0, *)) {
-        btn.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
         UIImage *icon = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
         [btn setImage:icon forState:UIControlStateNormal];
         btn.tintColor = [UIColor labelColor];
         [btn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-    } else {
-        btn.backgroundColor = [UIColor whiteColor];
     }
     [btn setTitle:@"  RedditFilter Settings" forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont systemFontOfSize:17];
@@ -551,9 +550,9 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
   forControlEvents:UIControlEventTouchUpInside];
 
     [hostingView addSubview:btn];
-    // Make sure our button is always on top of SwiftUI content
     [hostingView bringSubviewToFront:btn];
-    rf_log(@"RedditFilter button added at y=%.1f safeBottom=%.1f", btnY, safeBottom);
+    rf_log(@"RedditFilter button added at y=%.1f (bounds.h=%.1f safeBottom=%.1f)",
+           btnY, hostingView.bounds.size.height, safeBottom);
 }
 
 %hook UIViewController
