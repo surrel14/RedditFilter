@@ -509,7 +509,7 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
 static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *parentVC) {
     // Avoid adding twice
     for (UIView *v in hostingView.subviews)
-        if (v.tag == 0x5246) return; // 0x5246 = "RF"
+        if (v.tag == 0x5246) return;
 
     CGFloat safeBottom = hostingView.safeAreaInsets.bottom;
     CGFloat btnHeight  = 50.0;
@@ -522,11 +522,15 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
     btn.contentEdgeInsets = UIEdgeInsetsMake(0, 20, 0, 20);
 
+    // Solid background so it's always visible on top of SwiftUI content
     if (@available(iOS 13.0, *)) {
+        btn.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
         UIImage *icon = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
         [btn setImage:icon forState:UIControlStateNormal];
         btn.tintColor = [UIColor labelColor];
         [btn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    } else {
+        btn.backgroundColor = [UIColor whiteColor];
     }
     [btn setTitle:@"  RedditFilter Settings" forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont systemFontOfSize:17];
@@ -542,15 +546,14 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
         separator.backgroundColor = [UIColor lightGrayColor];
     [btn addSubview:separator];
 
-    // Highlight on touch
-    [btn addTarget:btn action:@selector(rf_highlight) forControlEvents:UIControlEventTouchDown];
-
     [btn addTarget:parentVC
             action:@selector(redditFilter_settingsButtonTapped:)
   forControlEvents:UIControlEventTouchUpInside];
 
     [hostingView addSubview:btn];
-    rf_log(@"RedditFilter button added to SwiftUI hosting view");
+    // Make sure our button is always on top of SwiftUI content
+    [hostingView bringSubviewToFront:btn];
+    rf_log(@"RedditFilter button added at y=%.1f safeBottom=%.1f", btnY, safeBottom);
 }
 
 %hook UIViewController
@@ -561,20 +564,44 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     NSString *n = NSStringFromClass(object_getClass(self));
     if (![n containsString:@"BottomSheet"]) return;
 
-    // Check presenter chain for Profile VC
-    BOOL fromProfile = NO;
-    UIViewController *cursor = self.presentingViewController;
-    while (cursor) {
-        NSString *cn = NSStringFromClass(object_getClass(cursor));
-        if ([cn containsString:@"Profile"] || [cn containsString:@"Account"] ||
-            [cn containsString:@"Drawer"]  || [cn containsString:@"UserMenu"])
-            { fromProfile = YES; break; }
-        cursor = cursor.presentingViewController ?: cursor.parentViewController;
-    }
-    if (!fromProfile) return;
-
     // Idempotency guard
     if (objc_getAssociatedObject(self, kRFCollectionPatchedKey)) return;
+
+    // Identify this as the profile "My Account" sheet by checking the child
+    // hosting controller class name — it must contain "ProfileMyAccountSettings"
+    BOOL isAccountSheet = NO;
+
+    // Check child VCs for ProfileMyAccountSettings
+    for (UIViewController *child in self.childViewControllers) {
+        NSString *cn = NSStringFromClass(object_getClass(child));
+        if ([cn containsString:@"ProfileMyAccountSettings"] ||
+            [cn containsString:@"MyAccountSettings"]) {
+            isAccountSheet = YES;
+            break;
+        }
+    }
+
+    // Also check the hosting view class name in the view hierarchy
+    if (!isAccountSheet) {
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:self.view];
+        while (queue.count && !isAccountSheet) {
+            UIView *v = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            NSString *vn = NSStringFromClass(object_getClass(v));
+            if ([vn containsString:@"ProfileMyAccountSettings"] ||
+                [vn containsString:@"MyAccountSettings"]) {
+                isAccountSheet = YES;
+            }
+            [queue addObjectsFromArray:v.subviews];
+        }
+    }
+
+    if (!isAccountSheet) {
+        rf_log(@"BottomSheet: not the account sheet, skipping (%@)", n);
+        return;
+    }
+
+    rf_log(@"BottomSheet: identified as account sheet");
     objc_setAssociatedObject(self, kRFCollectionPatchedKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
