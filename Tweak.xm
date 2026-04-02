@@ -595,27 +595,9 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
         return;
     }
 
-    // Newer Reddit: pure SwiftUI — find the hosting controller child and overlay a button
-    rf_log(@"BottomSheet: no UICollectionView, trying SwiftUI hosting controller overlay");
-    for (UIViewController *child in self.childViewControllers) {
-        NSString *cn = NSStringFromClass(object_getClass(child));
-        if ([cn containsString:@"HostingController"] || [cn containsString:@"HostingView"]) {
-            rf_log(@"Found hosting controller: %@", cn);
-            UIViewController *__weak weakSelf = self;
-            UIView *__weak weakView = child.view;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                UIView *v = weakView;
-                UIViewController *vc = weakSelf;
-                if (!v || !vc) return;
-                rf_addSettingsButtonToView(v, vc);
-            });
-            return;
-        }
-    }
-
-    // Fallback: add button directly to self.view
-    rf_log(@"BottomSheet: no hosting controller found, adding button to self.view");
+    // Newer Reddit: pure SwiftUI — add button directly on the bottom sheet's
+    // own view so it's guaranteed to be on top of the SwiftUI content.
+    rf_log(@"BottomSheet: no UICollectionView, adding button overlay to sheet view");
     UIViewController *__weak weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
