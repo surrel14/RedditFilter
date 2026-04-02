@@ -408,6 +408,102 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
     return nil;
 }
 
+// ── RFCollectionWrapper: kept for backwards compatibility with older Reddit ──
+
+@interface RFCollectionWrapper : NSObject <UICollectionViewDataSource, UICollectionViewDelegate>
+@property (nonatomic, weak) id<UICollectionViewDataSource> origDS;
+@property (nonatomic, weak) id<UICollectionViewDelegate>   origDel;
+@end
+
+@implementation RFCollectionWrapper
+
+- (NSInteger)numberOfSectionsInCollectionView:(UICollectionView *)cv {
+    if ([self.origDS respondsToSelector:@selector(numberOfSectionsInCollectionView:)])
+        return [self.origDS numberOfSectionsInCollectionView:cv];
+    return 1;
+}
+
+- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+    NSInteger orig = [self.origDS collectionView:cv numberOfItemsInSection:section];
+    return (section == 0) ? orig + 1 : orig;
+}
+
+- (UICollectionViewCell *)collectionView:(UICollectionView *)cv
+                  cellForItemAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == 0 && ip.item == 0) {
+        static NSString *cellID = @"RFSettingsCell";
+        [cv registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:cellID];
+        UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:cellID
+                                                                    forIndexPath:ip];
+        for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
+        for (UIGestureRecognizer *g in cell.gestureRecognizers) [cell removeGestureRecognizer:g];
+
+        UIImageView *icon = [[UIImageView alloc] init];
+        icon.translatesAutoresizingMaskIntoConstraints = NO;
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        if (@available(iOS 13.0, *)) {
+            icon.image = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
+            icon.tintColor = [UIColor labelColor];
+        }
+        UILabel *label = [[UILabel alloc] init];
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        label.text = @"RedditFilter Settings";
+        label.font = [UIFont systemFontOfSize:17];
+        if (@available(iOS 13.0, *))
+            label.textColor = [UIColor labelColor];
+
+        [cell.contentView addSubview:icon];
+        [cell.contentView addSubview:label];
+        [NSLayoutConstraint activateConstraints:@[
+            [icon.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:20],
+            [icon.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [icon.widthAnchor constraintEqualToConstant:22],
+            [icon.heightAnchor constraintEqualToConstant:22],
+            [label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],
+            [label.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-20],
+        ]];
+        cell.userInteractionEnabled = YES;
+        cell.contentView.userInteractionEnabled = YES;
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+            initWithTarget:self action:@selector(rfSettingsCellTapped:)];
+        tap.numberOfTapsRequired = 1;
+        [cell addGestureRecognizer:tap];
+        return cell;
+    }
+    NSIndexPath *origIP = (ip.section == 0)
+        ? [NSIndexPath indexPathForItem:ip.item - 1 inSection:ip.section] : ip;
+    return [self.origDS collectionView:cv cellForItemAtIndexPath:origIP];
+}
+
+- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == 0 && ip.item == 0) {
+        [cv deselectItemAtIndexPath:ip animated:YES];
+        redditFilter_presentSettings(rf_topPresentableVC());
+        return;
+    }
+    NSIndexPath *origIP = (ip.section == 0)
+        ? [NSIndexPath indexPathForItem:ip.item - 1 inSection:ip.section] : ip;
+    if ([self.origDel respondsToSelector:@selector(collectionView:didSelectItemAtIndexPath:)])
+        [self.origDel collectionView:cv didSelectItemAtIndexPath:origIP];
+}
+
+- (void)rfSettingsCellTapped:(UITapGestureRecognizer *)tap {
+    redditFilter_presentSettings(rf_topPresentableVC());
+}
+
+- (BOOL)respondsToSelector:(SEL)sel {
+    if ([super respondsToSelector:sel]) return YES;
+    return [self.origDel respondsToSelector:sel];
+}
+
+- (id)forwardingTargetForSelector:(SEL)sel {
+    if ([self.origDel respondsToSelector:sel]) return self.origDel;
+    return nil;
+}
+
+@end
+
 // ── Button overlay approach for SwiftUI hosting controller ──────────────────
 
 static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *parentVC) {
