@@ -525,7 +525,7 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     if (contentMaxY < 100)
         contentMaxY = hostingView.bounds.size.height * 0.60;
 
-    CGFloat btnY = contentMaxY - 100.0;
+    CGFloat btnY = contentMaxY - 50.0;
     rf_log(@"contentMaxY=%.1f btnY=%.1f bounds.h=%.1f", contentMaxY, btnY, hostingView.bounds.size.height);
 
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
