@@ -511,12 +511,22 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     for (UIView *v in hostingView.subviews)
         if (v.tag == 0x5246) return;
 
-    CGFloat btnHeight  = 50.0;
-    // Position the button using layoutMargins/safeArea so it sits
-    // just above the home bar indicator
-    CGFloat safeBottom = hostingView.safeAreaInsets.bottom;
-    // The button should be placed relative to the safe area bottom
-    CGFloat btnY = hostingView.bounds.size.height - safeBottom - btnHeight;
+    CGFloat btnHeight = 50.0;
+
+    // Find the bottom edge of the SwiftUI content by scanning all subviews
+    CGFloat contentMaxY = 0;
+    for (UIView *sub in hostingView.subviews) {
+        if (sub.tag == 0x5246) continue; // skip our own button
+        CGFloat subMaxY = CGRectGetMaxY(sub.frame);
+        if (subMaxY > contentMaxY && subMaxY < hostingView.bounds.size.height - 50)
+            contentMaxY = subMaxY;
+    }
+    // If we couldn't find content, fall back to 60% of view height
+    if (contentMaxY < 100)
+        contentMaxY = hostingView.bounds.size.height * 0.60;
+
+    CGFloat btnY = contentMaxY;
+    rf_log(@"contentMaxY=%.1f btnY=%.1f bounds.h=%.1f", contentMaxY, btnY, hostingView.bounds.size.height);
 
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
     btn.tag = 0x5246;
@@ -551,8 +561,7 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
 
     [hostingView addSubview:btn];
     [hostingView bringSubviewToFront:btn];
-    rf_log(@"RedditFilter button added at y=%.1f (bounds.h=%.1f safeBottom=%.1f)",
-           btnY, hostingView.bounds.size.height, safeBottom);
+    rf_log(@"RedditFilter button added at y=%.1f", btnY);
 }
 
 %hook UIViewController
