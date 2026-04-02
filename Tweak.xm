@@ -539,7 +539,18 @@ static UICollectionView *rf_findCollectionViewInVC(UIViewController *vc) {
 
     UICollectionView *cv = rf_findCollectionViewInVC(self);
     if (!cv) {
-        rf_log(@"BottomSheet: no UICollectionView found");
+        rf_log(@"BottomSheet: no UICollectionView found — dumping full view hierarchy:");
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:self.view];
+        while (queue.count) {
+            UIView *v = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            rf_log(@"  view: %@ frame:%@", NSStringFromClass(object_getClass(v)),
+                   NSStringFromCGRect(v.frame));
+            [queue addObjectsFromArray:v.subviews];
+        }
+        rf_log(@"BottomSheet: child VCs:");
+        for (UIViewController *child in self.childViewControllers)
+            rf_log(@"  childVC: %@", NSStringFromClass(object_getClass(child)));
         return;
     }
 
