@@ -525,7 +525,7 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     if (contentMaxY < 100)
         contentMaxY = hostingView.bounds.size.height * 0.60;
 
-    CGFloat btnY = contentMaxY - 50.0;
+    CGFloat btnY = contentMaxY - 48.0;
     rf_log(@"contentMaxY=%.1f btnY=%.1f bounds.h=%.1f", contentMaxY, btnY, hostingView.bounds.size.height);
 
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -634,7 +634,7 @@ static void rf_addSettingsButtonToView(UIView *hostingView, UIViewController *pa
     // own view so it's guaranteed to be on top of the SwiftUI content.
     rf_log(@"BottomSheet: no UICollectionView, adding button overlay to sheet view");
     UIViewController *__weak weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         UIViewController *vc = weakSelf;
         if (!vc) return;
