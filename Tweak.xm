@@ -312,7 +312,8 @@ static void filterNode(NSMutableDictionary *node) {
 
 %hook FeedNetworkSource
 - (NSArray *)postsAndCommentsFromData:(id)data {
-  return filteredObjects(%orig);
+    NSArray *objects = %orig(data);
+    return filteredObjects(objects);
 }
 %end
 
