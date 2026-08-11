@@ -1,5 +1,4 @@
 name: RedditDeluxe
-
 on:
   push:
   workflow_dispatch:
@@ -12,16 +11,13 @@ on:
         description: "Direct URL to Decrypted IPA file"
         type: string
         required: false
-
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
       - name: Get package info
         id: package_info
         run: |
@@ -31,23 +27,23 @@ jobs:
           fi
           echo "id=$(grep "Package:" control | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y rsync unzip zip python3 python3-pip file curl git
-
       - name: Install theos-jailed dependencies
         if: ${{ inputs.create_release }}
         run: |
           sudo apt update
           sudo apt install -y build-essential checkinstall autoconf automake libtool-bin llvm xmlstarlet
-          curl -L https://github.com/libimobiledevice/libplist/releases/download/2.6.0/libplist-2.6.0.tar.bz2 | bzip2 -d | tar -x
+          curl -fL --retry 5 --retry-delay 5 --retry-all-errors \
+            https://github.com/libimobiledevice/libplist/releases/download/2.6.0/libplist-2.6.0.tar.bz2 \
+            -o /tmp/libplist.tar.bz2
+          tar -xjf /tmp/libplist.tar.bz2
           cd libplist*
           ./configure
           sudo make install
           sudo ldconfig
-
       - name: Download IPA (Auto)
         if: ${{ inputs.create_release && !inputs.ipa_url }}
         uses: level3tjg/decryptedappstore-action@main
@@ -56,28 +52,133 @@ jobs:
           cache: true
           path: ${{ github.workspace }}/App.ipa
           token: ${{ secrets.DECRYPTEDAPPSTORE_SESSION_TOKEN }}
-
       - name: Download IPA (Manual)
         if: ${{ inputs.create_release && inputs.ipa_url }}
+        shell: bash
         run: |
-          curl -Lo "${{ github.workspace }}/App.ipa" "${{ inputs.ipa_url }}"
-          zip -T "${{ github.workspace }}/App.ipa"
-
+          set -euo pipefail
+          IPA="${{ github.workspace }}/App.ipa"
+          URL="${{ inputs.ipa_url }}"
+          echo "========================================"
+          echo "Downloading Reddit IPA"
+          echo "========================================"
+          echo "URL: $URL"
+          rm -f "$IPA"
+          curl \
+            --fail \
+            --location \
+            --show-error \
+            --silent \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 300 \
+            --user-agent "Mozilla/5.0" \
+            --output "$IPA" \
+            "$URL"
+          echo ""
+          echo "========================================"
+          echo "Downloaded file information"
+          echo "========================================"
+          if [ ! -f "$IPA" ]; then
+            echo "::error::IPA file was not downloaded."
+            exit 1
+          fi
+          file "$IPA"
+          ls -lh "$IPA"
+          FILE_SIZE=$(stat -c%s "$IPA")
+          echo "File size: $FILE_SIZE bytes"
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+            echo "::error::Downloaded file is suspiciously small."
+            echo ""
+            echo "First bytes of downloaded file:"
+            head -c 500 "$IPA" | cat -v
+            exit 1
+          fi
+          echo ""
+          echo "========================================"
+          echo "Validating IPA archive"
+          echo "========================================"
+          if ! unzip -t "$IPA" >/dev/null 2>&1; then
+            echo "::error::Downloaded file is not a valid IPA/ZIP archive."
+            echo ""
+            echo "File information:"
+            file "$IPA"
+            echo ""
+            echo "First bytes of downloaded file:"
+            head -c 500 "$IPA" | cat -v
+            echo ""
+            echo "Possible causes:"
+            echo " - The URL returned an HTML error page"
+            echo " - The download URL expired"
+            echo " - The hosting service blocked GitHub Actions"
+            echo " - The file was removed"
+            echo " - The IPA download was incomplete"
+            rm -f "$IPA"
+            exit 1
+          fi
+          echo "IPA ZIP structure is valid."
+          echo ""
+          echo "========================================"
+          echo "Checking Payload"
+          echo "========================================"
+          if ! unzip -l "$IPA" | grep -q "Payload/"; then
+            echo "::error::The downloaded archive does not contain a Payload directory."
+            exit 1
+          fi
+          echo "Payload directory found."
+          echo ""
+          echo "========================================"
+          echo "Reddit IPA downloaded successfully"
+          echo "========================================"
+          echo "IPA: $IPA"
+          echo "Size:"
+          du -h "$IPA"
+      - name: Validate Auto IPA
+        if: ${{ inputs.create_release && !inputs.ipa_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="${{ github.workspace }}/App.ipa"
+          echo "========================================"
+          echo "Validating automatically downloaded IPA"
+          echo "========================================"
+          if [ ! -f "$IPA" ]; then
+            echo "::error::Automatic IPA download did not produce App.ipa."
+            exit 1
+          fi
+          file "$IPA"
+          ls -lh "$IPA"
+          if ! unzip -t "$IPA" >/dev/null 2>&1; then
+            echo "::error::Automatically downloaded IPA is invalid."
+            exit 1
+          fi
+          if ! unzip -l "$IPA" | grep -q "Payload/"; then
+            echo "::error::Automatically downloaded archive does not contain Payload."
+            exit 1
+          fi
+          echo "Automatic IPA is valid."
       - name: Get IPA Info
         if: ${{ inputs.create_release }}
         id: ipa_info
+        shell: bash
         run: |
-          info=$(unzip -p "${{ github.workspace }}/App.ipa" Payload/*.app/Info.plist)
-          echo "bundle-id=$(echo "$info" | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleIdentifier\"]/following-sibling::*[1]/text()")" >> "$GITHUB_OUTPUT"
-          echo "version=$(echo "$info" | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleShortVersionString\"]/following-sibling::*[1]/text()")" >> "$GITHUB_OUTPUT"
-
+          set -euo pipefail
+          IPA="${{ github.workspace }}/App.ipa"
+          info=$(unzip -p "$IPA" Payload/*.app/Info.plist)
+          bundle_id=$(echo "$info" | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleIdentifier\"]/following-sibling::*[1]/text()")
+          version=$(echo "$info" | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleShortVersionString\"]/following-sibling::*[1]/text()")
+          echo "bundle-id=$bundle_id" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Bundle ID: $bundle_id"
+          echo "Version: $version"
       - name: Setup theos
         uses: level3tjg/theos-action@main
         with:
           cache: true
           cache-dir-theos: ${{ github.workspace }}/theos
           cache-dir-sdks: ${{ github.workspace }}/theos/sdks
-
       - name: Checkout theos-jailed
         if: ${{ inputs.create_release }}
         uses: actions/checkout@v4
@@ -85,12 +186,10 @@ jobs:
           repository: level3tjg/theos-jailed
           path: theos-jailed
           submodules: recursive
-
       - name: Install theos-jailed
         if: ${{ inputs.create_release }}
         run: |
           ./theos-jailed/install
-
       - name: Install insert-dylib
         if: ${{ inputs.create_release }}
         run: |
@@ -102,18 +201,15 @@ jobs:
           cargo build --release
           sudo install -m 0755 target/release/insert-dylib /usr/local/bin/insert-dylib
           /usr/local/bin/insert-dylib --help >/dev/null || true
-
       - name: Build rootless deb
         run: make package
         env:
           FINALPACKAGE: ${{ inputs.create_release }}
           THEOS_PACKAGE_SCHEME: rootless
-
       - name: Build rootful deb
         run: make clean package
         env:
           FINALPACKAGE: ${{ inputs.create_release }}
-
       - name: Build IPA
         if: ${{ inputs.create_release }}
         run: make package
@@ -122,68 +218,75 @@ jobs:
           SIDELOADED: 1
           IPA: ${{ github.workspace }}/App.ipa
           APP_VERSION: ${{ steps.ipa_info.outputs.version }}
-
       - name: Copy payloads and inject dylibs automatically
         if: ${{ inputs.create_release }}
         shell: bash
         run: |
           set -euo pipefail
-
           IPA_FILE="$(ls -t packages/*.ipa | head -n1)"
           if [ -z "${IPA_FILE:-}" ] || [ ! -f "$IPA_FILE" ]; then
             echo "No IPA found in packages/"
             exit 1
           fi
-
           WORK_DIR="${{ github.workspace }}/patched_ipa"
           rm -rf "$WORK_DIR"
           mkdir -p "$WORK_DIR"
-
           unzip -q "$IPA_FILE" -d "$WORK_DIR"
-
           APP_PATH="$(find "$WORK_DIR/Payload" -maxdepth 2 -type d -name "*.app" | head -n1)"
           if [ -z "${APP_PATH:-}" ] || [ ! -d "$APP_PATH" ]; then
             echo "App bundle not found"
             exit 1
           fi
-
           mkdir -p "$APP_PATH/Frameworks"
-
           echo "Copying dylibs..."
-          find .dylib -maxdepth 1 -type f -name "*.dylib" ! -name "libsubstrate.dylib" -exec cp -f {} "$APP_PATH/Frameworks/" \;
-
+          find .dylib \
+            -maxdepth 1 \
+            -type f \
+            -name "*.dylib" \
+            ! -name "libsubstrate.dylib" \
+            -exec cp -f {} "$APP_PATH/Frameworks/" \;
           if [ -f ".dylib/libsubstrate.dylib" ]; then
             cp -f ".dylib/libsubstrate.dylib" "$APP_PATH/libsubstrate.dylib"
             cp -f ".dylib/libsubstrate.dylib" "$APP_PATH/Frameworks/libsubstrate.dylib"
           fi
-
           echo "Copying frameworks..."
-          find .dylib -maxdepth 1 -type d -name "*.framework" -exec cp -a {} "$APP_PATH/Frameworks/" \;
-
-          EXECUTABLE="$(/usr/bin/python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleExecutable"])' "$APP_PATH/Info.plist")"
+          find .dylib \
+            -maxdepth 1 \
+            -type d \
+            -name "*.framework" \
+            -exec cp -a {} "$APP_PATH/Frameworks/" \;
+          EXECUTABLE="$(
+            /usr/bin/python3 -c \
+            'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleExecutable"])' \
+            "$APP_PATH/Info.plist"
+          )"
           EXECUTABLE_PATH="$APP_PATH/$EXECUTABLE"
-
           echo "Executable: $EXECUTABLE_PATH"
+          if [ ! -f "$EXECUTABLE_PATH" ]; then
+            echo "Main executable not found"
+            exit 1
+          fi
           echo "Detecting dylibs automatically..."
-
-          mapfile -t ALL_DYLIBS < <(find .dylib -maxdepth 1 -type f -name "*.dylib" -printf "%f\n" | sort)
-
+          mapfile -t ALL_DYLIBS < <(
+            find .dylib \
+              -maxdepth 1 \
+              -type f \
+              -name "*.dylib" \
+              -printf "%f\n" |
+            sort
+          )
           if [ "${#ALL_DYLIBS[@]}" -eq 0 ]; then
             echo "No dylibs found in .dylib/"
             exit 1
           fi
-
           echo "Found dylibs:"
           printf '%s\n' "${ALL_DYLIBS[@]}"
-
           SAFE_EXCLUDE_DYLIBS=(
           )
-
           PRIORITY_DYLIBS=(
             "libsubstrate.dylib"
             "zxPluginsInject.dylib"
           )
-
           FILTERED_DYLIBS=()
           for lib in "${ALL_DYLIBS[@]}"; do
             skip=0
@@ -198,14 +301,11 @@ jobs:
               FILTERED_DYLIBS+=("$lib")
             fi
           done
-
           if [ "${#FILTERED_DYLIBS[@]}" -eq 0 ]; then
             echo "All dylibs were excluded; nothing to inject"
             exit 1
           fi
-
           ORDERED_DYLIBS=()
-
           for priority in "${PRIORITY_DYLIBS[@]}"; do
             for lib in "${FILTERED_DYLIBS[@]}"; do
               if [ "$lib" = "$priority" ]; then
@@ -213,7 +313,6 @@ jobs:
               fi
             done
           done
-
           for lib in "${FILTERED_DYLIBS[@]}"; do
             already_added=0
             for added in "${ORDERED_DYLIBS[@]}"; do
@@ -226,17 +325,18 @@ jobs:
               ORDERED_DYLIBS+=("$lib")
             fi
           done
-
           echo "Injection order:"
           printf '%s\n' "${ORDERED_DYLIBS[@]}"
-
           echo "Injecting dylibs..."
           for lib in "${ORDERED_DYLIBS[@]}"; do
             LIB_PATH="@executable_path/Frameworks/$lib"
             echo "Inject: $LIB_PATH"
-            insert-dylib --all-yes --inplace "$LIB_PATH" "$EXECUTABLE_PATH"
+            insert-dylib \
+              --all-yes \
+              --inplace \
+              "$LIB_PATH" \
+              "$EXECUTABLE_PATH"
           done
-
           if command -v ldid >/dev/null 2>&1; then
             LDID_BIN="$(command -v ldid)"
           elif [ -n "${THEOS:-}" ] && [ -x "${THEOS}/toolchain/linux/iphone/bin/ldid" ]; then
@@ -247,45 +347,38 @@ jobs:
             echo "ldid not found"
             exit 1
           fi
-
           echo "Using ldid: $LDID_BIN"
-
           echo "Signing dylibs in Frameworks..."
           for lib in "${ORDERED_DYLIBS[@]}"; do
             if [ -f "$APP_PATH/Frameworks/$lib" ]; then
               "$LDID_BIN" -S "$APP_PATH/Frameworks/$lib"
             fi
           done
-
           if [ -f "$APP_PATH/libsubstrate.dylib" ]; then
             echo "Signing root libsubstrate.dylib..."
             "$LDID_BIN" -S "$APP_PATH/libsubstrate.dylib"
           fi
-
           if [ -f "$APP_PATH/Frameworks/libsubstrate.dylib" ]; then
             echo "Signing Frameworks/libsubstrate.dylib..."
             "$LDID_BIN" -S "$APP_PATH/Frameworks/libsubstrate.dylib"
           fi
-
           echo "Signing framework binaries if present..."
-          find "$APP_PATH/Frameworks" -maxdepth 2 -type f | while read -r bin; do
+          find "$APP_PATH/Frameworks" -maxdepth 2 -type f |
+          while read -r bin; do
             case "$bin" in
               *.framework/*)
                 "$LDID_BIN" -S "$bin" || true
                 ;;
             esac
           done
-
           echo "Signing main executable..."
           "$LDID_BIN" -S "$EXECUTABLE_PATH"
-
           echo "Verifying injected load commands..."
           if command -v llvm-objdump >/dev/null 2>&1; then
             llvm-objdump --macho --dylibs-used "$EXECUTABLE_PATH" || true
           else
             echo "llvm-objdump not available, skipping dylib listing"
           fi
-
           echo "Repacking IPA..."
           IPA_FILE_ABS="$(realpath "$IPA_FILE")"
           rm -f "$IPA_FILE_ABS"
@@ -293,15 +386,12 @@ jobs:
             cd "$WORK_DIR"
             zip -qry "$IPA_FILE_ABS" Payload
           )
-
           echo "Patched IPA written back to: $IPA_FILE_ABS"
-
       - name: Rename output IPA and ZIP files
         if: ${{ inputs.create_release }}
         shell: bash
         run: |
           set -euo pipefail
-
           shopt -s nullglob
           for file in packages/*.ipa packages/*.zip; do
             [ -f "$file" ] || continue
@@ -310,7 +400,6 @@ jobs:
             new="$base"
             new="${new//RedditFilter/RedditDeluxe}"
             new="${new//redditfilter/redditdeluxe}"
-
             if [ "$new" != "$base" ]; then
               echo "Renaming $base -> $new"
               mv -f "$file" "$dir/$new"
@@ -318,20 +407,18 @@ jobs:
               echo "No rename needed for $base"
             fi
           done
-
       - name: Hash release files
         id: hash_files
+        if: ${{ inputs.create_release }}
         run: |
           echo 'hashes<<EOF' >> "$GITHUB_OUTPUT"
           echo "$(sha256sum packages/*)" >> "$GITHUB_OUTPUT"
           echo 'EOF' >> "$GITHUB_OUTPUT"
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: RedditDeluxe_${{ steps.package_info.outputs.version }}
           path: packages/*
-
       - name: Create release
         if: ${{ inputs.create_release }}
         uses: softprops/action-gh-release@v2
