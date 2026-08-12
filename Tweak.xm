@@ -15,26 +15,36 @@
 @interface CUICatalog : NSObject {
   NSBundle *_bundle;
 }
+
 - (NSArray<NSString *> *)allImageNames;
-- (instancetype)initWithName:(NSString *)name fromBundle:(NSBundle *)bundle;
-- (instancetype)initWithName:(NSString *)name fromBundle:(NSBundle *)bundle error:(NSError **)error;
+- (instancetype)initWithName:(NSString *)name
+                   fromBundle:(NSBundle *)bundle;
+- (instancetype)initWithName:(NSString *)name
+                   fromBundle:(NSBundle *)bundle
+                        error:(NSError **)error;
+
 @end
 
 static NSMutableArray<NSBundle *> *assetBundles;
 static NSMutableArray<CUICatalog *> *assetCatalogs;
 
 extern "C" UIImage *iconWithName(NSString *iconName) {
-  for (CUICatalog *catalog in assetCatalogs)
-    for (NSString *imageName in [catalog allImageNames])
+  for (CUICatalog *catalog in assetCatalogs) {
+    for (NSString *imageName in [catalog allImageNames]) {
       if ([imageName hasPrefix:iconName] &&
           (imageName.length == iconName.length ||
-           imageName.length == iconName.length + 3))
+           imageName.length == iconName.length + 3)) {
+
         return [UIImage imageNamed:imageName
-                             inBundle:object_getIvar(
-                                         catalog,
-                                         class_getInstanceVariable(
-                                             object_getClass(catalog), "_bundle"))
-             compatibleWithTraitCollection:nil];
+                          inBundle:object_getIvar(
+                                      catalog,
+                                      class_getInstanceVariable(
+                                          object_getClass(catalog),
+                                          "_bundle"))
+         compatibleWithTraitCollection:nil];
+      }
+    }
+  }
 
   return nil;
 }
@@ -42,10 +52,13 @@ extern "C" UIImage *iconWithName(NSString *iconName) {
 extern "C" NSString *localizedString(NSString *key, NSString *table) {
   for (NSBundle *bundle in assetBundles) {
     NSString *localizedString =
-        [bundle localizedStringForKey:key value:nil table:table];
+        [bundle localizedStringForKey:key
+                                value:nil
+                                table:table];
 
-    if (![localizedString isEqualToString:key])
+    if (![localizedString isEqualToString:key]) {
       return localizedString;
+    }
   }
 
   return nil;
@@ -63,17 +76,28 @@ extern "C" Class CoreClass(NSString *name) {
   ];
 
   for (NSString *prefix in prefixes) {
-    if (cls)
+    if (cls) {
       break;
+    }
 
-    cls = NSClassFromString([prefix stringByAppendingString:name]);
+    cls = NSClassFromString(
+        [prefix stringByAppendingString:name]);
   }
 
   return cls;
 }
 
+// ============================================================================
+// MARK: - FILTER HELPERS
+// ============================================================================
+
 static BOOL shouldFilterObject(id object) {
-  NSString *className = NSStringFromClass(object_getClass(object));
+  if (!object) {
+    return NO;
+  }
+
+  NSString *className =
+      NSStringFromClass(object_getClass(object));
 
   BOOL isAdPost =
       [className hasSuffix:@"AdPost"] ||
@@ -93,90 +117,160 @@ static BOOL shouldFilterObject(id object) {
 
   if ([NSUserDefaults.standardUserDefaults
           boolForKey:kRedditFilterPromoted] &&
-      isAdPost)
+      isAdPost) {
     return YES;
+  }
 
   if ([NSUserDefaults.standardUserDefaults
           boolForKey:kRedditFilterRecommended] &&
-      isRecommendation)
+      isRecommendation) {
     return YES;
+  }
 
   if ([NSUserDefaults.standardUserDefaults
           boolForKey:kRedditFilterNSFW] &&
-      isNSFW)
+      isNSFW) {
     return YES;
+  }
 
   return NO;
 }
 
 static NSArray *filteredObjects(NSArray *objects) {
-  return [objects filteredArrayUsingPredicate:
-                    [NSPredicate predicateWithBlock:^BOOL(
-                        id object,
-                        NSDictionary *bindings) {
-                      return !shouldFilterObject(object);
-                    }]];
+  if (!objects) {
+    return objects;
+  }
+
+  return [objects
+      filteredArrayUsingPredicate:
+          [NSPredicate predicateWithBlock:^BOOL(
+              id object,
+              NSDictionary *bindings) {
+
+            return !shouldFilterObject(object);
+          }]];
 }
 
-static void filterNode(NSMutableDictionary *node) {
-  if (![node isKindOfClass:NSMutableDictionary.class])
-    return;
+// ============================================================================
+// MARK: - JSON FILTER
+// ============================================================================
 
-  if ([node[@"__typename"] isEqualToString:@"SubredditPost"]) {
+static void filterNode(NSMutableDictionary *node) {
+  if (![node isKindOfClass:NSMutableDictionary.class]) {
+    return;
+  }
+
+  NSString *type =
+      [node[@"__typename"] isKindOfClass:NSString.class]
+          ? node[@"__typename"]
+          : nil;
+
+  // --------------------------------------------------------------------------
+  // SubredditPost
+  // --------------------------------------------------------------------------
+
+  if ([type isEqualToString:@"SubredditPost"]) {
 
     if ([NSUserDefaults.standardUserDefaults
             boolForKey:kRedditFilterAwards]) {
+
       node[@"awardings"] = @[];
       node[@"isGildable"] = @NO;
     }
 
     if ([NSUserDefaults.standardUserDefaults
-            boolForKey:kRedditFilterScores])
+            boolForKey:kRedditFilterScores]) {
+
       node[@"isScoreHidden"] = @YES;
-
-    if ([NSUserDefaults.standardUserDefaults
-            boolForKey:kRedditFilterNSFW] &&
-        [node[@"isNsfw"] boolValue])
-      node[@"isHidden"] = @YES;
-  }
-
-  if ([node[@"__typename"] isEqualToString:@"CellGroup"]) {
-
-    for (NSMutableDictionary *cell in node[@"cells"]) {
-
-      if ([cell[@"__typename"] isEqualToString:@"ActionCell"]) {
-
-        if ([NSUserDefaults.standardUserDefaults
-                boolForKey:kRedditFilterAwards]) {
-
-          cell[@"isAwardHidden"] = @YES;
-
-          id goldenUpvoteInfo =
-              cell[@"goldenUpvoteInfo"];
-
-          if ([goldenUpvoteInfo isKindOfClass:NSDictionary.class] &&
-              ![goldenUpvoteInfo isEqual:[NSNull null]]) {
-
-            cell[@"goldenUpvoteInfo"][@"isGildable"] = @NO;
-          }
-        }
-
-        if ([NSUserDefaults.standardUserDefaults
-                boolForKey:kRedditFilterScores])
-          cell[@"isScoreHidden"] = @YES;
-      }
     }
 
     if ([NSUserDefaults.standardUserDefaults
+            boolForKey:kRedditFilterNSFW] &&
+        [node[@"isNsfw"] boolValue]) {
+
+      node[@"isHidden"] = @YES;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // CellGroup
+  // --------------------------------------------------------------------------
+
+  if ([type isEqualToString:@"CellGroup"]) {
+
+    id cellsObject = node[@"cells"];
+
+    if ([cellsObject isKindOfClass:NSArray.class]) {
+
+      for (NSMutableDictionary *cell in cellsObject) {
+
+        if (![cell isKindOfClass:NSMutableDictionary.class]) {
+          continue;
+        }
+
+        if ([cell[@"__typename"]
+                isEqualToString:@"ActionCell"]) {
+
+          if ([NSUserDefaults.standardUserDefaults
+                  boolForKey:kRedditFilterAwards]) {
+
+            cell[@"isAwardHidden"] = @YES;
+
+            id goldenUpvoteInfo =
+                cell[@"goldenUpvoteInfo"];
+
+            if ([goldenUpvoteInfo
+                    isKindOfClass:NSDictionary.class] &&
+                ![goldenUpvoteInfo
+                    isEqual:[NSNull null]]) {
+
+              if ([goldenUpvoteInfo
+                      isKindOfClass:NSMutableDictionary.class]) {
+
+                ((NSMutableDictionary *)goldenUpvoteInfo)
+                    [@"isGildable"] = @NO;
+              } else {
+
+                NSMutableDictionary *mutableInfo =
+                    [goldenUpvoteInfo mutableCopy];
+
+                mutableInfo[@"isGildable"] = @NO;
+
+                cell[@"goldenUpvoteInfo"] =
+                    mutableInfo;
+              }
+            }
+          }
+
+          if ([NSUserDefaults.standardUserDefaults
+                  boolForKey:kRedditFilterScores]) {
+
+            cell[@"isScoreHidden"] = @YES;
+          }
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------------
+    // Promoted CellGroup
+    // ------------------------------------------------------------------------
+
+    if ([NSUserDefaults.standardUserDefaults
             boolForKey:kRedditFilterPromoted] &&
-        [node[@"adPayload"] isKindOfClass:NSDictionary.class]) {
+        [node[@"adPayload"]
+            isKindOfClass:NSDictionary.class]) {
 
       node[@"cells"] = @[];
     }
 
+    // ------------------------------------------------------------------------
+    // Recommended CellGroup
+    // ------------------------------------------------------------------------
+
     if ([NSUserDefaults.standardUserDefaults
             boolForKey:kRedditFilterRecommended] &&
-        ![node[@"recommendationContext"] isEqual:[NSNull null]] &&
+        ![node[@"recommendationContext"]
+            isEqual:[NSNull null]] &&
         [node[@"recommendationContext"]
             isKindOfClass:NSDictionary.class]) {
 
@@ -199,12 +293,14 @@ static void filterNode(NSMutableDictionary *node) {
           [typeName isKindOfClass:NSString.class] &&
           [isContextHidden isKindOfClass:NSNumber.class]) {
 
-        if (!(([typeName
-                   isEqualToString:
-                       @"PopularRecommendationContext"] ||
-              [typeIdentifier
-                   hasPrefix:@"global_popular"]) &&
-             [isContextHidden boolValue])) {
+        BOOL isPopularContext =
+            [typeName
+                isEqualToString:@"PopularRecommendationContext"] ||
+            [typeIdentifier
+                hasPrefix:@"global_popular"];
+
+        if (!(isPopularContext &&
+              [isContextHidden boolValue])) {
 
           node[@"cells"] = @[];
         }
@@ -212,14 +308,23 @@ static void filterNode(NSMutableDictionary *node) {
     }
   }
 
+  // --------------------------------------------------------------------------
+  // AdPost
+  // --------------------------------------------------------------------------
+
   if ([NSUserDefaults.standardUserDefaults
           boolForKey:kRedditFilterPromoted]) {
 
-    if ([node[@"__typename"] isEqualToString:@"AdPost"])
+    if ([type isEqualToString:@"AdPost"]) {
       node[@"isHidden"] = @YES;
+    }
   }
 
-  if ([node[@"__typename"] isEqualToString:@"Comment"]) {
+  // --------------------------------------------------------------------------
+  // Comment
+  // --------------------------------------------------------------------------
+
+  if ([type isEqualToString:@"Comment"]) {
 
     if ([NSUserDefaults.standardUserDefaults
             boolForKey:kRedditFilterAwards]) {
@@ -229,10 +334,13 @@ static void filterNode(NSMutableDictionary *node) {
     }
 
     if ([NSUserDefaults.standardUserDefaults
-            boolForKey:kRedditFilterScores])
-      node[@"isScoreHidden"] = @YES;
+            boolForKey:kRedditFilterScores]) {
 
-    if ([node[@"authorInfo"] isKindOfClass:NSDictionary.class] &&
+      node[@"isScoreHidden"] = @YES;
+    }
+
+    if ([node[@"authorInfo"]
+            isKindOfClass:NSDictionary.class] &&
         [node[@"authorInfo"][@"id"]
             isEqualToString:@"t2_6l4z3"] &&
         [NSUserDefaults.standardUserDefaults
@@ -243,6 +351,10 @@ static void filterNode(NSMutableDictionary *node) {
   }
 }
 
+// ============================================================================
+// MARK: - NETWORK FILTER
+// ============================================================================
+
 %hook NSURLSession
 
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request
@@ -251,58 +363,147 @@ static void filterNode(NSMutableDictionary *node) {
                                           NSURLResponse *response,
                                           NSError *error))completionHandler {
 
-  if (![request.URL.host hasPrefix:@"gql"] &&
-      ![request.URL.host hasPrefix:@"oauth"])
-    return %orig;
+  NSString *host = request.URL.host;
 
-  void (^newCompletionHandler)(NSData *,
-                               NSURLResponse *,
-                               NSError *) =
+  if (![host hasPrefix:@"gql"] &&
+      ![host hasPrefix:@"oauth"]) {
+
+    return %orig;
+  }
+
+  void (^newCompletionHandler)(
+      NSData *,
+      NSURLResponse *,
+      NSError *) =
       ^(NSData *data,
         NSURLResponse *response,
         NSError *error) {
 
-        if (error || !data)
-          return completionHandler(data, response, error);
+        if (error || !data) {
+          completionHandler(data, response, error);
+          return;
+        }
 
         NSDictionary *json =
-            [NSJSONSerialization JSONObjectWithData:data
-                                            options:NSJSONReadingMutableContainers
-                                              error:&error];
+            [NSJSONSerialization
+                JSONObjectWithData:data
+                           options:NSJSONReadingMutableContainers
+                             error:&error];
 
-        if (error || !json)
-          return completionHandler(data, response, error);
+        if (error || !json) {
+          completionHandler(data, response, error);
+          return;
+        }
 
         if ([json isKindOfClass:NSDictionary.class]) {
 
-          if (json[@"data"] &&
-              [json[@"data"] isKindOfClass:NSDictionary.class]) {
+          id jsonData = json[@"data"];
 
-            NSDictionary *data = json[@"data"];
-            NSMutableDictionary *root =
-                data.allValues.firstObject;
+          if ([jsonData isKindOfClass:NSDictionary.class]) {
 
-            if ([root isKindOfClass:NSDictionary.class]) {
+            NSDictionary *dataDictionary =
+                (NSDictionary *)jsonData;
 
-              if ([root.allValues.firstObject
-                      isKindOfClass:NSDictionary.class] &&
-                  root.allValues.firstObject[@"edges"]) {
+            id firstValue =
+                dataDictionary.allValues.firstObject;
 
-                for (NSMutableDictionary *edge
-                     in root.allValues.firstObject[@"edges"]) {
+            NSMutableDictionary *root = nil;
 
-                  filterNode(edge[@"node"]);
+            if ([firstValue
+                    isKindOfClass:NSDictionary.class]) {
+
+              root =
+                  [(NSDictionary *)firstValue
+                      mutableCopy];
+            }
+
+            if (root) {
+
+              // --------------------------------------------------------------
+              // Edges
+              // --------------------------------------------------------------
+
+              id firstRootValue =
+                  root.allValues.firstObject;
+
+              if ([firstRootValue
+                      isKindOfClass:NSDictionary.class]) {
+
+                NSDictionary *firstDictionary =
+                    (NSDictionary *)firstRootValue;
+
+                id edges =
+                    firstDictionary[@"edges"];
+
+                if ([edges isKindOfClass:NSArray.class]) {
+
+                  for (id edge in edges) {
+
+                    if ([edge
+                            isKindOfClass:NSDictionary.class]) {
+
+                      id node =
+                          [(NSDictionary *)edge objectForKey:@"node"];
+
+                      if ([node
+                              isKindOfClass:
+                                  NSMutableDictionary.class]) {
+
+                        filterNode(node);
+
+                      } else if ([node
+                                     isKindOfClass:
+                                         NSDictionary.class]) {
+
+                        NSMutableDictionary *mutableNode =
+                            [node mutableCopy];
+
+                        filterNode(mutableNode);
+                      }
+                    }
+                  }
                 }
               }
 
-              if (root[@"commentForest"]) {
+              // --------------------------------------------------------------
+              // Comment forest
+              // --------------------------------------------------------------
 
-                for (NSMutableDictionary *tree
-                     in root[@"commentForest"][@"trees"]) {
+              id commentForest =
+                  root[@"commentForest"];
 
-                  filterNode(tree[@"node"]);
+              if ([commentForest
+                      isKindOfClass:NSDictionary.class]) {
+
+                id trees =
+                    commentForest[@"trees"];
+
+                if ([trees isKindOfClass:NSArray.class]) {
+
+                  for (id tree in trees) {
+
+                    if (![tree
+                            isKindOfClass:
+                                NSDictionary.class]) {
+                      continue;
+                    }
+
+                    id node =
+                        tree[@"node"];
+
+                    if ([node
+                            isKindOfClass:
+                                NSMutableDictionary.class]) {
+
+                      filterNode(node);
+                    }
+                  }
                 }
               }
+
+              // --------------------------------------------------------------
+              // Ads
+              // --------------------------------------------------------------
 
               if (root[@"commentsPageAds"] &&
                   [NSUserDefaults.standardUserDefaults
@@ -325,6 +526,10 @@ static void filterNode(NSMutableDictionary *node) {
                 root[@"pdpCommentsAds"] = @[];
               }
 
+              // --------------------------------------------------------------
+              // Recommendations
+              // --------------------------------------------------------------
+
               if (root[@"recommendations"] &&
                   [NSUserDefaults.standardUserDefaults
                       boolForKey:kRedditFilterRecommended]) {
@@ -332,23 +537,33 @@ static void filterNode(NSMutableDictionary *node) {
                 root[@"recommendations"] = @[];
               }
 
-            } else if ([root isKindOfClass:NSArray.class]) {
+            } else if ([firstValue
+                           isKindOfClass:NSArray.class]) {
 
-              for (NSMutableDictionary *node
-                   in (NSArray *)root) {
+              for (id node in
+                   (NSArray *)firstValue) {
 
-                filterNode(node);
+                if ([node
+                        isKindOfClass:
+                            NSMutableDictionary.class]) {
+
+                  filterNode(node);
+                }
               }
             }
           }
         }
 
-        data =
-            [NSJSONSerialization dataWithJSONObject:json
-                                            options:0
-                                              error:nil];
+        NSData *filteredData =
+            [NSJSONSerialization
+                dataWithJSONObject:json
+                           options:0
+                             error:nil];
 
-        completionHandler(data, response, error);
+        completionHandler(
+            filteredData ?: data,
+            response,
+            error);
       };
 
   return %orig(request, newCompletionHandler);
@@ -357,11 +572,16 @@ static void filterNode(NSMutableDictionary *node) {
 %end
 
 // ============================================================================
-// MARK: - HELPER: present RedditFilter settings
+// MARK: - SETTINGS PRESENTATION
 // ============================================================================
 
 static void redditFilter_presentSettings(
     UIViewController *fromVC) {
+
+  if (!fromVC) {
+    NSLog(@"[RedditFilter] ERROR: No presenting view controller");
+    return;
+  }
 
   Class filterVCClass =
       NSClassFromString(
@@ -385,11 +605,11 @@ static void redditFilter_presentSettings(
 
     [fromVC dismissViewControllerAnimated:YES
                                completion:^{
-                                 [fromVC
-                                     presentViewController:nav
-                                                 animated:YES
-                                               completion:nil];
-                               }];
+
+      [fromVC presentViewController:nav
+                           animated:YES
+                         completion:nil];
+    }];
 
   } else {
 
@@ -400,7 +620,7 @@ static void redditFilter_presentSettings(
 }
 
 // ============================================================================
-// MARK: - DEBUG: on-screen logger
+// MARK: - DEBUG LOGGER
 // ============================================================================
 
 static NSMutableArray<NSString *> *rf_debugLines;
@@ -412,15 +632,18 @@ static void rf_log(NSString *format, ...) {
   va_start(args, format);
 
   NSString *msg =
-      [[NSString alloc] initWithFormat:format
-                              arguments:args];
+      [[NSString alloc]
+          initWithFormat:format
+               arguments:args];
 
   va_end(args);
 
   NSLog(@"[RedditFilter] %@", msg);
 
-  if (!rf_debugLines)
-    rf_debugLines = [NSMutableArray array];
+  if (!rf_debugLines) {
+    rf_debugLines =
+        [NSMutableArray array];
+  }
 
   NSString *timestamp =
       [NSDateFormatter
@@ -433,27 +656,32 @@ static void rf_log(NSString *format, ...) {
                                  timestamp,
                                  msg]];
 
-  while (rf_debugLines.count > 60)
+  while (rf_debugLines.count > 60) {
     [rf_debugLines removeObjectAtIndex:0];
+  }
 }
 
 static void rf_showDebugLog(void) {
 
   NSString *logText =
-      [rf_debugLines componentsJoinedByString:@"\n"] ?:
-      @"(no logs yet)";
+      rf_debugLines.count
+          ? [rf_debugLines
+                componentsJoinedByString:@"\n"]
+          : @"(no logs yet)";
 
   UIAlertController *alert =
       [UIAlertController
-          alertControllerWithTitle:@"RedditFilter Debug Log"
+          alertControllerWithTitle:
+              @"RedditFilter Debug Log"
                            message:logText
-                    preferredStyle:UIAlertControllerStyleAlert];
+                    preferredStyle:
+                        UIAlertControllerStyleAlert];
 
   [alert addAction:
       [UIAlertAction
           actionWithTitle:@"Copy to Clipboard"
                     style:UIAlertActionStyleDefault
-                  handler:^(UIAlertAction *a) {
+                  handler:^(UIAlertAction *action) {
 
                     [UIPasteboard generalPasteboard].string =
                         logText;
@@ -463,7 +691,7 @@ static void rf_showDebugLog(void) {
       [UIAlertAction
           actionWithTitle:@"Clear & Close"
                     style:UIAlertActionStyleDestructive
-                  handler:^(UIAlertAction *a) {
+                  handler:^(UIAlertAction *action) {
 
                     [rf_debugLines removeAllObjects];
                   }]];
@@ -476,17 +704,22 @@ static void rf_showDebugLog(void) {
 
   UIViewController *top = nil;
 
-  for (UIWindow *w in UIApplication.sharedApplication.windows) {
+  for (UIWindow *window
+       in UIApplication.sharedApplication.windows) {
 
-    if (w.isKeyWindow) {
+    if (window.isKeyWindow) {
 
-      top = w.rootViewController;
+      top =
+          window.rootViewController;
+
       break;
     }
   }
 
-  while (top.presentedViewController)
-    top = top.presentedViewController;
+  while (top.presentedViewController) {
+    top =
+        top.presentedViewController;
+  }
 
   if (top) {
 
@@ -497,7 +730,7 @@ static void rf_showDebugLog(void) {
 }
 
 // ============================================================================
-// MARK: - DEBUG: log every presented VC and UIAlertController actions
+// MARK: - DEBUG UIViewController
 // ============================================================================
 
 %hook UIViewController
@@ -519,11 +752,12 @@ static void rf_showDebugLog(void) {
            (long)alert.preferredStyle,
            alert.title);
 
-    for (UIAlertAction *a in alert.actions) {
+    for (UIAlertAction *action
+         in alert.actions) {
 
       rf_log(@"    action:'%@' style=%ld",
-             a.title,
-             (long)a.style);
+             action.title,
+             (long)action.style);
     }
   }
 
@@ -533,33 +767,38 @@ static void rf_showDebugLog(void) {
 %end
 
 // ============================================================================
-// MARK: - HELPER: find the top-most presentable VC
+// MARK: - TOP VIEW CONTROLLER
 // ============================================================================
 
 static UIViewController *rf_topPresentableVC(void) {
 
   UIWindow *keyWindow = nil;
 
-  for (UIWindow *w in UIApplication.sharedApplication.windows) {
+  for (UIWindow *window
+       in UIApplication.sharedApplication.windows) {
 
-    if (w.isKeyWindow) {
+    if (window.isKeyWindow) {
 
-      keyWindow = w;
+      keyWindow = window;
       break;
     }
   }
 
-  if (!keyWindow)
+  if (!keyWindow) {
     return nil;
+  }
 
   UIViewController *vc =
       keyWindow.rootViewController;
 
-  while (vc.presentedViewController)
-    vc = vc.presentedViewController;
+  while (vc.presentedViewController) {
+    vc =
+        vc.presentedViewController;
+  }
 
-  if ([vc isKindOfClass:
-          [UINavigationController class]]) {
+  if ([vc
+          isKindOfClass:
+              [UINavigationController class]]) {
 
     vc =
         [(UINavigationController *)vc
@@ -570,7 +809,7 @@ static UIViewController *rf_topPresentableVC(void) {
 }
 
 // ============================================================================
-// MARK: - 3-FINGER LONG PRESS
+// MARK: - THREE FINGER GESTURES
 // ============================================================================
 
 %hook UIWindow
@@ -583,6 +822,8 @@ static UIViewController *rf_topPresentableVC(void) {
 
   dispatch_once(&onceToken, ^{
 
+    // 3 finger / 1 second = settings
+
     UILongPressGestureRecognizer *longPress =
         [[UILongPressGestureRecognizer alloc]
             initWithTarget:self
@@ -593,6 +834,8 @@ static UIViewController *rf_topPresentableVC(void) {
     longPress.minimumPressDuration = 1.0;
 
     [self addGestureRecognizer:longPress];
+
+    // 3 finger / 0.1 second = debug log
 
     UILongPressGestureRecognizer *shortPress =
         [[UILongPressGestureRecognizer alloc]
@@ -611,26 +854,33 @@ static UIViewController *rf_topPresentableVC(void) {
 
 %new
 - (void)redditFilter_handleThreeFingerLongPress:
-    (UILongPressGestureRecognizer *)g {
+    (UILongPressGestureRecognizer *)gesture {
 
-  if (g.state != UIGestureRecognizerStateBegan)
+  if (gesture.state !=
+      UIGestureRecognizerStateBegan) {
+
     return;
+  }
 
   rf_log(@"3-finger long press → opening settings");
 
   UIViewController *top =
       rf_topPresentableVC();
 
-  if (top)
+  if (top) {
     redditFilter_presentSettings(top);
+  }
 }
 
 %new
 - (void)redditFilter_handleThreeFingerShortPress:
-    (UILongPressGestureRecognizer *)g {
+    (UILongPressGestureRecognizer *)gesture {
 
-  if (g.state != UIGestureRecognizerStateBegan)
+  if (gesture.state !=
+      UIGestureRecognizerStateBegan) {
+
     return;
+  }
 
   rf_log(@"3-finger short press → showing debug log");
 
@@ -640,7 +890,7 @@ static UIViewController *rf_topPresentableVC(void) {
 %end
 
 // ============================================================================
-// MARK: - INJECT "RedditFilter Settings" INTO RPLBottomSheet
+// MARK: - COLLECTION VIEW HELPERS
 // ============================================================================
 
 static const void *kRFCollectionPatchedKey =
@@ -649,16 +899,22 @@ static const void *kRFCollectionPatchedKey =
 static UICollectionView *rf_findCollectionView(
     UIView *root) {
 
-  if ([root isKindOfClass:[UICollectionView class]])
+  if ([root
+          isKindOfClass:
+              [UICollectionView class]]) {
+
     return (UICollectionView *)root;
+  }
 
-  for (UIView *sub in root.subviews) {
+  for (UIView *subview
+       in root.subviews) {
 
-    UICollectionView *cv =
-        rf_findCollectionView(sub);
+    UICollectionView *collectionView =
+        rf_findCollectionView(subview);
 
-    if (cv)
-      return cv;
+    if (collectionView) {
+      return collectionView;
+    }
   }
 
   return nil;
@@ -667,32 +923,34 @@ static UICollectionView *rf_findCollectionView(
 static UICollectionView *rf_findCollectionViewInVC(
     UIViewController *vc) {
 
-  UICollectionView *cv =
+  UICollectionView *collectionView =
       rf_findCollectionView(vc.view);
 
-  if (cv)
-    return cv;
+  if (collectionView) {
+    return collectionView;
+  }
 
   for (UIViewController *child
        in vc.childViewControllers) {
 
-    cv =
+    collectionView =
         rf_findCollectionViewInVC(child);
 
-    if (cv)
-      return cv;
+    if (collectionView) {
+      return collectionView;
+    }
   }
 
   return nil;
 }
 
 // ============================================================================
-// MARK: - RFCollectionWrapper
+// MARK: - COLLECTION WRAPPER
 // ============================================================================
 
 @interface RFCollectionWrapper
-    : NSObject <UICollectionViewDataSource,
-                UICollectionViewDelegate>
+    : NSObject
+    <UICollectionViewDataSource, UICollectionViewDelegate>
 
 @property (nonatomic, weak)
     id<UICollectionViewDataSource> origDS;
@@ -705,7 +963,7 @@ static UICollectionView *rf_findCollectionViewInVC(
 @implementation RFCollectionWrapper
 
 - (NSInteger)numberOfSectionsInCollectionView:
-    (UICollectionView *)cv {
+    (UICollectionView *)collectionView {
 
   if ([self.origDS
           respondsToSelector:
@@ -713,46 +971,64 @@ static UICollectionView *rf_findCollectionViewInVC(
 
     return
         [self.origDS
-            numberOfSectionsInCollectionView:cv];
+            numberOfSectionsInCollectionView:
+                collectionView];
   }
 
   return 1;
 }
 
-- (NSInteger)collectionView:(UICollectionView *)cv
-     numberOfItemsInSection:(NSInteger)section {
+- (NSInteger)collectionView:
+    (UICollectionView *)collectionView
+    numberOfItemsInSection:(NSInteger)section {
 
-  NSInteger orig =
-      [self.origDS collectionView:cv
-           numberOfItemsInSection:section];
+  if (!self.origDS) {
+    return section == 0 ? 1 : 0;
+  }
 
-  return (section == 0)
-             ? orig + 1
-             : orig;
+  NSInteger originalCount =
+      [self.origDS
+          collectionView:collectionView
+          numberOfItemsInSection:section];
+
+  return section == 0
+             ? originalCount + 1
+             : originalCount;
 }
 
 - (UICollectionViewCell *)collectionView:
-    (UICollectionView *)cv
-    cellForItemAtIndexPath:(NSIndexPath *)ip {
+    (UICollectionView *)collectionView
+    cellForItemAtIndexPath:(NSIndexPath *)indexPath {
 
-  if (ip.section == 0 && ip.item == 0) {
+  // Our settings cell
+  if (indexPath.section == 0 &&
+      indexPath.item == 0) {
 
     static NSString *cellID =
         @"RFSettingsCell";
 
-    [cv registerClass:[UICollectionViewCell class]
-       forCellWithReuseIdentifier:cellID];
+    [collectionView
+        registerClass:[UICollectionViewCell class]
+        forCellWithReuseIdentifier:cellID];
 
     UICollectionViewCell *cell =
-        [cv dequeueReusableCellWithReuseIdentifier:cellID
-                                      forIndexPath:ip];
+        [collectionView
+            dequeueReusableCellWithReuseIdentifier:
+                cellID
+                                      forIndexPath:
+                                          indexPath];
 
-    for (UIView *v in cell.contentView.subviews)
-      [v removeFromSuperview];
+    for (UIView *view
+         in cell.contentView.subviews) {
 
-    for (UIGestureRecognizer *g
-         in cell.gestureRecognizers)
-      [cell removeGestureRecognizer:g];
+      [view removeFromSuperview];
+    }
+
+    for (UIGestureRecognizer *gesture
+         in cell.gestureRecognizers) {
+
+      [cell removeGestureRecognizer:gesture];
+    }
 
     UIImageView *icon =
         [[UIImageView alloc] init];
@@ -766,8 +1042,9 @@ static UICollectionView *rf_findCollectionViewInVC(
     if (@available(iOS 13.0, *)) {
 
       icon.image =
-          [UIImage systemImageNamed:
-                       @"line.3.horizontal.decrease.circle"];
+          [UIImage
+              systemImageNamed:
+                  @"line.3.horizontal.decrease.circle"];
 
       icon.tintColor =
           [UIColor labelColor];
@@ -785,34 +1062,35 @@ static UICollectionView *rf_findCollectionViewInVC(
     label.font =
         [UIFont systemFontOfSize:17];
 
-    if (@available(iOS 13.0, *))
+    if (@available(iOS 13.0, *)) {
+
       label.textColor =
           [UIColor labelColor];
+    }
 
     [cell.contentView addSubview:icon];
     [cell.contentView addSubview:label];
 
     [NSLayoutConstraint activateConstraints:@[
-
       [icon.leadingAnchor
           constraintEqualToAnchor:
               cell.contentView.leadingAnchor
-          constant:20],
+          constant:20.0],
 
       [icon.centerYAnchor
           constraintEqualToAnchor:
               cell.contentView.centerYAnchor],
 
       [icon.widthAnchor
-          constraintEqualToConstant:22],
+          constraintEqualToConstant:22.0],
 
       [icon.heightAnchor
-          constraintEqualToConstant:22],
+          constraintEqualToConstant:22.0],
 
       [label.leadingAnchor
           constraintEqualToAnchor:
               icon.trailingAnchor
-          constant:14],
+          constant:14.0],
 
       [label.centerYAnchor
           constraintEqualToAnchor:
@@ -821,7 +1099,7 @@ static UICollectionView *rf_findCollectionViewInVC(
       [label.trailingAnchor
           constraintEqualToAnchor:
               cell.contentView.trailingAnchor
-          constant:-20],
+          constant:-20.0]
     ]];
 
     cell.userInteractionEnabled = YES;
@@ -840,41 +1118,57 @@ static UICollectionView *rf_findCollectionViewInVC(
     return cell;
   }
 
-  NSIndexPath *origIP =
-      (ip.section == 0)
+  // Original Reddit cell
+  NSIndexPath *originalIndexPath =
+      indexPath.section == 0
           ? [NSIndexPath
-                indexPathForItem:ip.item - 1
-                inSection:ip.section]
-          : ip;
+                indexPathForItem:indexPath.item - 1
+                inSection:indexPath.section]
+          : indexPath;
 
-  return
-      [self.origDS collectionView:cv
-          cellForItemAtIndexPath:origIP];
+  if ([self.origDS
+          respondsToSelector:
+              @selector(collectionView:
+                       cellForItemAtIndexPath:)]) {
+
+    return
+        [self.origDS
+            collectionView:collectionView
+            cellForItemAtIndexPath:
+                originalIndexPath];
+  }
+
+  return [UICollectionViewCell new];
 }
 
-- (void)collectionView:(UICollectionView *)cv
-    didSelectItemAtIndexPath:(NSIndexPath *)ip {
+- (void)collectionView:
+    (UICollectionView *)collectionView
+    didSelectItemAtIndexPath:
+        (NSIndexPath *)indexPath {
 
-  if (ip.section == 0 && ip.item == 0) {
+  if (indexPath.section == 0 &&
+      indexPath.item == 0) {
 
-    [cv deselectItemAtIndexPath:ip
+    [collectionView
+        deselectItemAtIndexPath:indexPath
                        animated:YES];
 
     UIViewController *top =
         rf_topPresentableVC();
 
-    if (top)
+    if (top) {
       redditFilter_presentSettings(top);
+    }
 
     return;
   }
 
-  NSIndexPath *origIP =
-      (ip.section == 0)
+  NSIndexPath *originalIndexPath =
+      indexPath.section == 0
           ? [NSIndexPath
-                indexPathForItem:ip.item - 1
-                inSection:ip.section]
-          : ip;
+                indexPathForItem:indexPath.item - 1
+                inSection:indexPath.section]
+          : indexPath;
 
   if ([self.origDel
           respondsToSelector:
@@ -882,33 +1176,41 @@ static UICollectionView *rf_findCollectionViewInVC(
                        didSelectItemAtIndexPath:)]) {
 
     [self.origDel
-        collectionView:cv
-        didSelectItemAtIndexPath:origIP];
+        collectionView:collectionView
+        didSelectItemAtIndexPath:
+            originalIndexPath];
   }
 }
 
 - (void)rfSettingsCellTapped:
-    (UITapGestureRecognizer *)tap {
+    (UITapGestureRecognizer *)gesture {
 
   UIViewController *top =
       rf_topPresentableVC();
 
-  if (top)
+  if (top) {
     redditFilter_presentSettings(top);
+  }
 }
 
-- (BOOL)respondsToSelector:(SEL)sel {
+- (BOOL)respondsToSelector:(SEL)selector {
 
-  if ([super respondsToSelector:sel])
+  if ([super respondsToSelector:selector]) {
     return YES;
+  }
 
-  return [self.origDel respondsToSelector:sel];
+  return [self.origDel
+      respondsToSelector:selector];
 }
 
-- (id)forwardingTargetForSelector:(SEL)sel {
+- (id)forwardingTargetForSelector:
+    (SEL)selector {
 
-  if ([self.origDel respondsToSelector:sel])
+  if ([self.origDel
+          respondsToSelector:selector]) {
+
     return self.origDel;
+  }
 
   return nil;
 }
@@ -916,92 +1218,114 @@ static UICollectionView *rf_findCollectionViewInVC(
 @end
 
 // ============================================================================
-// MARK: - Button overlay approach for SwiftUI hosting controller
+// MARK: - SWIFTUI BUTTON OVERLAY
 // ============================================================================
 
 static void rf_addSettingsButtonToView(
     UIView *hostingView,
     UIViewController *parentVC) {
 
-  for (UIView *v in hostingView.subviews) {
+  if (!hostingView ||
+      !parentVC) {
 
-    if (v.tag == 0x5246)
-      return;
+    return;
   }
 
-  CGFloat btnHeight = 50.0;
-  CGFloat contentMaxY = 0;
+  // Prevent duplicates
+  for (UIView *view
+       in hostingView.subviews) {
 
-  for (UIView *sub in hostingView.subviews) {
-
-    if (sub.tag == 0x5246)
-      continue;
-
-    CGFloat subMaxY =
-        CGRectGetMaxY(sub.frame);
-
-    if (subMaxY > contentMaxY &&
-        subMaxY <
-            hostingView.bounds.size.height - 50) {
-
-      contentMaxY = subMaxY;
+    if (view.tag == 0x5246) {
+      return;
     }
   }
 
-  if (contentMaxY < 100)
+  CGFloat buttonHeight = 50.0;
+
+  CGFloat contentMaxY = 0;
+
+  for (UIView *subview
+       in hostingView.subviews) {
+
+    if (subview.tag == 0x5246) {
+      continue;
+    }
+
+    CGFloat subviewMaxY =
+        CGRectGetMaxY(subview.frame);
+
+    if (subviewMaxY > contentMaxY &&
+        subviewMaxY <
+            hostingView.bounds.size.height - 50.0) {
+
+      contentMaxY = subviewMaxY;
+    }
+  }
+
+  if (contentMaxY < 100.0) {
+
     contentMaxY =
         hostingView.bounds.size.height * 0.60;
+  }
 
-  CGFloat btnY =
+  CGFloat buttonY =
       contentMaxY - 50.0;
 
-  rf_log(@"contentMaxY=%.1f btnY=%.1f bounds.h=%.1f",
+  if (buttonY < 0) {
+    buttonY = 0;
+  }
+
+  rf_log(@"contentMaxY=%.1f buttonY=%.1f bounds.h=%.1f",
          contentMaxY,
-         btnY,
+         buttonY,
          hostingView.bounds.size.height);
 
-  UIButton *btn =
-      [UIButton buttonWithType:UIButtonTypeSystem];
+  UIButton *button =
+      [UIButton buttonWithType:
+                    UIButtonTypeSystem];
 
-  btn.tag = 0x5246;
+  button.tag = 0x5246;
 
-  btn.frame =
+  button.frame =
       CGRectMake(
           0,
-          btnY,
+          buttonY,
           hostingView.bounds.size.width,
-          btnHeight);
+          buttonHeight);
 
-  btn.autoresizingMask =
+  button.autoresizingMask =
       UIViewAutoresizingFlexibleWidth |
       UIViewAutoresizingFlexibleTopMargin;
 
-  btn.contentHorizontalAlignment =
+  button.contentHorizontalAlignment =
       UIControlContentHorizontalAlignmentLeft;
 
-  btn.contentEdgeInsets =
+  button.contentEdgeInsets =
       UIEdgeInsetsMake(0, 20, 0, 20);
 
   if (@available(iOS 13.0, *)) {
 
     UIImage *icon =
-        [UIImage systemImageNamed:
-                     @"line.3.horizontal.decrease.circle"];
+        [UIImage
+            systemImageNamed:
+                @"line.3.horizontal.decrease.circle"];
 
-    [btn setImage:icon
-         forState:UIControlStateNormal];
+    [button setImage:icon
+            forState:UIControlStateNormal];
 
-    btn.tintColor =
+    button.tintColor =
         [UIColor labelColor];
 
-    [btn setTitleColor:[UIColor labelColor]
-             forState:UIControlStateNormal];
+    [button setTitleColor:
+                [UIColor labelColor]
+                  forState:UIControlStateNormal];
   }
 
-  [btn setTitle:@"  RedditFilter Settings"
-        forState:UIControlStateNormal];
+  [button
+      setTitle:@"  RedditFilter Settings"
+      forState:UIControlStateNormal];
 
-  btn.titleLabel.font =
+  button.titleLabel.font =
       [UIFont systemFontOfSize:17];
 
   UIView *separator =
@@ -1016,30 +1340,36 @@ static void rf_addSettingsButtonToView(
   separator.autoresizingMask =
       UIViewAutoresizingFlexibleWidth;
 
-  if (@available(iOS 13.0, *))
+  if (@available(iOS 13.0, *)) {
+
     separator.backgroundColor =
         [UIColor separatorColor];
-  else
+
+  } else {
+
     separator.backgroundColor =
         [UIColor lightGrayColor];
+  }
 
-  [btn addSubview:separator];
+  [button addSubview:separator];
 
-  [btn addTarget:parentVC
-          action:@selector(
-              redditFilter_settingsButtonTapped:)
-forControlEvents:UIControlEventTouchUpInside];
+  [button
+      addTarget:parentVC
+      action:@selector(
+          redditFilter_settingsButtonTapped:)
+      forControlEvents:
+          UIControlEventTouchUpInside];
 
-  [hostingView addSubview:btn];
+  [hostingView addSubview:button];
 
-  [hostingView bringSubviewToFront:btn];
+  [hostingView bringSubviewToFront:button];
 
   rf_log(@"RedditFilter button added at y=%.1f",
-         btnY);
+         buttonY);
 }
 
 // ============================================================================
-// MARK: - UIViewController BottomSheet hook
+// MARK: - BOTTOM SHEET HOOK
 // ============================================================================
 
 %hook UIViewController
@@ -1048,66 +1378,82 @@ forControlEvents:UIControlEventTouchUpInside];
 
   %orig;
 
-  NSString *n =
+  NSString *className =
       NSStringFromClass(object_getClass(self));
 
-  if (![n containsString:@"BottomSheet"])
+  if (![className containsString:@"BottomSheet"]) {
     return;
+  }
 
+  // Idempotency guard
   if (objc_getAssociatedObject(
           self,
-          kRFCollectionPatchedKey))
+          kRFCollectionPatchedKey)) {
+
     return;
+  }
 
   BOOL isAccountSheet = NO;
 
+  // Check child view controllers
   for (UIViewController *child
        in self.childViewControllers) {
 
-    NSString *cn =
-        NSStringFromClass(object_getClass(child));
+    NSString *childClassName =
+        NSStringFromClass(
+            object_getClass(child));
 
-    if ([cn containsString:
-             @"ProfileMyAccountSettings"] ||
-        [cn containsString:
-             @"MyAccountSettings"]) {
+    if ([childClassName
+            containsString:
+                @"ProfileMyAccountSettings"] ||
+        [childClassName
+            containsString:
+                @"MyAccountSettings"]) {
 
       isAccountSheet = YES;
       break;
     }
   }
 
+  // Check view hierarchy
   if (!isAccountSheet) {
 
     NSMutableArray *queue =
-        [NSMutableArray arrayWithObject:self.view];
+        [NSMutableArray
+            arrayWithObject:self.view];
 
-    while (queue.count && !isAccountSheet) {
+    while (queue.count &&
+           !isAccountSheet) {
 
-      UIView *v =
+      UIView *view =
           queue.firstObject;
 
       [queue removeObjectAtIndex:0];
 
-      NSString *vn =
-          NSStringFromClass(object_getClass(v));
+      NSString *viewClassName =
+          NSStringFromClass(
+              object_getClass(view));
 
-      if ([vn containsString:
-               @"ProfileMyAccountSettings"] ||
-          [vn containsString:
-               @"MyAccountSettings"]) {
+      if ([viewClassName
+              containsString:
+                  @"ProfileMyAccountSettings"] ||
+          [viewClassName
+              containsString:
+                  @"MyAccountSettings"]) {
 
         isAccountSheet = YES;
+        break;
       }
 
-      [queue addObjectsFromArray:v.subviews];
+      [queue addObjectsFromArray:
+                 view.subviews];
     }
   }
 
   if (!isAccountSheet) {
 
     rf_log(@"BottomSheet: not the account sheet, skipping (%@)",
-           n);
+           className);
 
     return;
   }
@@ -1120,10 +1466,14 @@ forControlEvents:UIControlEventTouchUpInside];
       @YES,
       OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-  UICollectionView *cv =
+  // --------------------------------------------------------------------------
+  // Older Reddit versions
+  // --------------------------------------------------------------------------
+
+  UICollectionView *collectionView =
       rf_findCollectionViewInVC(self);
 
-  if (cv) {
+  if (collectionView) {
 
     rf_log(@"BottomSheet: found UICollectionView, injecting wrapper");
 
@@ -1131,27 +1481,31 @@ forControlEvents:UIControlEventTouchUpInside];
         [[RFCollectionWrapper alloc] init];
 
     wrapper.origDS =
-        cv.dataSource;
+        collectionView.dataSource;
 
     wrapper.origDel =
-        cv.delegate;
+        collectionView.delegate;
 
     objc_setAssociatedObject(
-        cv,
+        collectionView,
         kRFCollectionPatchedKey,
         wrapper,
         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    cv.dataSource =
+    collectionView.dataSource =
         wrapper;
 
-    cv.delegate =
+    collectionView.delegate =
         wrapper;
 
-    [cv reloadData];
+    [collectionView reloadData];
 
     return;
   }
+
+  // --------------------------------------------------------------------------
+  // Newer Reddit versions / SwiftUI
+  // --------------------------------------------------------------------------
 
   rf_log(@"BottomSheet: no UICollectionView, adding button overlay to sheet view");
 
@@ -1168,8 +1522,9 @@ forControlEvents:UIControlEventTouchUpInside];
         UIViewController *vc =
             weakSelf;
 
-        if (!vc)
+        if (!vc) {
           return;
+        }
 
         rf_addSettingsButtonToView(
             vc.view,
@@ -1186,8 +1541,9 @@ forControlEvents:UIControlEventTouchUpInside];
   UIViewController *top =
       rf_topPresentableVC();
 
-  if (top)
+  if (top) {
     redditFilter_presentSettings(top);
+  }
 }
 
 %end
@@ -1195,19 +1551,32 @@ forControlEvents:UIControlEventTouchUpInside];
 // ============================================================================
 // MARK: - LEGACY HOOKS
 // ============================================================================
+//
+// IMPORTANT:
+// These hooks intentionally do NOT use:
+//     %group Legacy
+//
+// Therefore they belong to Logos' implicit _ungrouped group.
+//
+// There must be only ONE %init for _ungrouped at the bottom.
+// ============================================================================
 
 %hook Listing
 
 - (void)fetchNextPage:
     (id (^)(NSArray *, id))completionHandler {
 
-  id (^newCompletionHandler)(NSArray *, id) =
-      ^(NSArray *objects, id _) {
+  id (^newCompletionHandler)(
+      NSArray *,
+      id) =
+      ^(NSArray *objects, id unused) {
 
         NSArray *filtered =
             filteredObjects(objects);
 
-        return completionHandler(filtered, _);
+        return completionHandler(
+            filtered,
+            unused);
       };
 
   return %orig(newCompletionHandler);
@@ -1217,10 +1586,19 @@ forControlEvents:UIControlEventTouchUpInside];
 
 %hook FeedNetworkSource
 
-- (NSArray *)postsAndCommentsFromData:(id)data {
+- (NSArray *)postsAndCommentsFromData:
+    (id)data {
 
-  // Store %orig first. Do not use filteredObjects(%orig) directly.
-  NSArray *objects = %orig;
+  // IMPORTANT:
+  // Do not write:
+  //
+  // return filteredObjects(%orig);
+  //
+  // because Logos can generate a nested macro expression
+  // that becomes difficult for the compiler to parse.
+
+  NSArray *objects =
+      %orig;
 
   return filteredObjects(objects);
 }
@@ -1231,20 +1609,24 @@ forControlEvents:UIControlEventTouchUpInside];
 
 - (BOOL)shouldFetchCommentAdPost {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterPromoted]
-          ? NO
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterPromoted]) {
+
+    return NO;
+  }
+
+  return %orig;
 }
 
 - (BOOL)shouldFetchAdditionalCommentAdPosts {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterPromoted]
-          ? NO
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterPromoted]) {
+
+    return NO;
+  }
+
+  return %orig;
 }
 
 %end
@@ -1254,16 +1636,27 @@ forControlEvents:UIControlEventTouchUpInside];
 - (BOOL)isHiddenByUserWithAccountSettings:
     (id)accountSettings {
 
-  return
-      ([NSUserDefaults.standardUserDefaults
-           boolForKey:kRedditFilterRecommended] &&
-       ([self.analyticType
+  BOOL filterRecommended =
+      [NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterRecommended];
+
+  if (filterRecommended) {
+
+    NSString *analyticType =
+        self.analyticType;
+
+    if ([analyticType
             containsString:@"recommended"] ||
-        [self.analyticType
+        [analyticType
             containsString:@"similar"] ||
-        [self.analyticType
-            containsString:@"popular"])) ||
-      %orig;
+        [analyticType
+            containsString:@"popular"]) {
+
+      return YES;
+    }
+  }
+
+  return %orig;
 }
 
 %end
@@ -1273,8 +1666,10 @@ forControlEvents:UIControlEventTouchUpInside];
 - (void)fetchActions {
 
   if ([NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterRecommended])
+          boolForKey:kRedditFilterRecommended]) {
+
     return;
+  }
 
   %orig;
 }
@@ -1285,38 +1680,46 @@ forControlEvents:UIControlEventTouchUpInside];
 
 - (NSArray *)awardingTotals {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterAwards]
-          ? nil
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterAwards]) {
+
+    return nil;
+  }
+
+  return %orig;
 }
 
 - (NSUInteger)totalAwardsReceived {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterAwards]
-          ? 0
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterAwards]) {
+
+    return 0;
+  }
+
+  return %orig;
 }
 
 - (BOOL)canAward {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterAwards]
-          ? NO
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterAwards]) {
+
+    return NO;
+  }
+
+  return %orig;
 }
 
 - (BOOL)isScoreHidden {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterScores]
-          ? YES
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterScores]) {
+
+    return YES;
+  }
+
+  return %orig;
 }
 
 %end
@@ -1325,58 +1728,70 @@ forControlEvents:UIControlEventTouchUpInside];
 
 - (NSArray *)awardingTotals {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterAwards]
-          ? nil
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterAwards]) {
+
+    return nil;
+  }
+
+  return %orig;
 }
 
 - (NSUInteger)totalAwardsReceived {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterAwards]
-          ? 0
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterAwards]) {
+
+    return 0;
+  }
+
+  return %orig;
 }
 
 - (BOOL)canAward {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterAwards]
-          ? NO
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterAwards]) {
+
+    return NO;
+  }
+
+  return %orig;
 }
 
 - (BOOL)shouldHighlightForHighAward {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterAwards]
-          ? NO
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterAwards]) {
+
+    return NO;
+  }
+
+  return %orig;
 }
 
 - (BOOL)isScoreHidden {
 
-  return
-      [NSUserDefaults.standardUserDefaults
-          boolForKey:kRedditFilterScores]
-          ? YES
-          : %orig;
+  if ([NSUserDefaults.standardUserDefaults
+          boolForKey:kRedditFilterScores]) {
+
+    return YES;
+  }
+
+  return %orig;
 }
 
 - (BOOL)shouldAutoCollapse {
 
-  return
-      [NSUserDefaults.standardUserDefaults
+  if ([NSUserDefaults.standardUserDefaults
           boolForKey:kRedditFilterAutoCollapseAutoMod] &&
       [((Comment *)self).authorPk
-          isEqualToString:@"t2_6l4z3"]
-          ? YES
-          : %orig;
+          isEqualToString:@"t2_6l4z3"]) {
+
+    return YES;
+  }
+
+  return %orig;
 }
 
 %end
@@ -1404,44 +1819,52 @@ forControlEvents:UIControlEventTouchUpInside];
           : [self detailLabel];
 
   if (!horizontalStackView ||
-      !detailLabel)
+      !detailLabel) {
+
     return;
-
-  if (detailLabel.text) {
-
-    UIView *contentView =
-        [self contentView];
-
-    [contentView addConstraints:@[
-
-      [NSLayoutConstraint
-          constraintWithItem:detailLabel
-                   attribute:NSLayoutAttributeHeight
-                   relatedBy:NSLayoutRelationEqual
-                      toItem:horizontalStackView
-                   attribute:NSLayoutAttributeHeight
-                  multiplier:.33
-                    constant:0],
-
-      [NSLayoutConstraint
-          constraintWithItem:horizontalStackView
-                   attribute:NSLayoutAttributeHeight
-                   relatedBy:NSLayoutRelationEqual
-                      toItem:contentView
-                   attribute:NSLayoutAttributeHeight
-                  multiplier:1
-                    constant:0],
-
-      [NSLayoutConstraint
-          constraintWithItem:horizontalStackView
-                   attribute:NSLayoutAttributeCenterY
-                   relatedBy:NSLayoutRelationEqual
-                      toItem:contentView
-                   attribute:NSLayoutAttributeCenterY
-                  multiplier:1
-                    constant:0]
-    ];
   }
+
+  if (!detailLabel.text) {
+    return;
+  }
+
+  UIView *contentView =
+      [self contentView];
+
+  // IMPORTANT:
+  // Correctly closed NSArray literal.
+  // This fixes:
+  //
+  // Tweak.xm:1443:6: error: expected ']'
+
+  [contentView addConstraints:@[
+    [NSLayoutConstraint
+        constraintWithItem:detailLabel
+                 attribute:NSLayoutAttributeHeight
+                 relatedBy:NSLayoutRelationEqual
+                    toItem:horizontalStackView
+                 attribute:NSLayoutAttributeHeight
+                multiplier:0.33
+                  constant:0],
+
+    [NSLayoutConstraint
+        constraintWithItem:horizontalStackView
+                 attribute:NSLayoutAttributeHeight
+                 relatedBy:NSLayoutRelationEqual
+                    toItem:contentView
+                 attribute:NSLayoutAttributeHeight
+                multiplier:1.0
+                  constant:0],
+
+    [NSLayoutConstraint
+        constraintWithItem:horizontalStackView
+                 attribute:NSLayoutAttributeCenterY
+                 relatedBy:NSLayoutRelationEqual
+                    toItem:contentView
+                 attribute:NSLayoutAttributeCenterY
+                multiplier:1.0
+                  constant:0]
+  ]];
 }
 
 %end
@@ -1454,14 +1877,18 @@ forControlEvents:UIControlEventTouchUpInside];
 
   NSLog(@"[RedditFilter] Initializing - injecting entry into profile drawer menu");
 
+  // --------------------------------------------------------------------------
+  // Asset bundles
+  // --------------------------------------------------------------------------
+
   assetBundles =
       [NSMutableArray array];
 
   assetCatalogs =
       [NSMutableArray array];
 
-  [assetBundles addObject:
-      NSBundle.mainBundle];
+  [assetBundles
+      addObject:NSBundle.mainBundle];
 
   for (NSString *file in
        [NSFileManager.defaultManager
@@ -1469,69 +1896,101 @@ forControlEvents:UIControlEventTouchUpInside];
                NSBundle.mainBundle.bundlePath
                               error:nil]) {
 
-    if (![file hasSuffix:@"bundle"])
+    if (![file hasSuffix:@"bundle"]) {
       continue;
+    }
 
-    NSBundle *bundle =
-        [NSBundle
-            bundleWithPath:
-                [NSBundle.mainBundle
-                    pathForResource:
-                        [file stringByDeletingPathExtension]
-                                  ofType:@"bundle"]];
+    NSString *resourceName =
+        [file stringByDeletingPathExtension];
 
-    if (bundle)
-      [assetBundles addObject:bundle];
-  }
-
-  for (NSString *file in
-       [NSFileManager.defaultManager
-           contentsOfDirectoryAtPath:
-               [NSBundle.mainBundle.bundlePath
-                   stringByAppendingPathComponent:
-                       @"Frameworks"]
-                              error:nil]) {
-
-    if (![file hasSuffix:@"framework"])
-      continue;
-
-    NSString *frameworkPath =
+    NSString *bundlePath =
         [NSBundle.mainBundle
-            pathForResource:
-                [file stringByDeletingPathExtension]
-                     ofType:@"framework"
-                inDirectory:@"Frameworks"];
+            pathForResource:resourceName
+                     ofType:@"bundle"];
 
     NSBundle *bundle =
-        [NSBundle bundleWithPath:
-                     frameworkPath];
+        [NSBundle bundleWithPath:bundlePath];
 
-    if (bundle)
+    if (bundle) {
       [assetBundles addObject:bundle];
-
-    for (NSString *file in
-         [NSFileManager.defaultManager
-             contentsOfDirectoryAtPath:
-                 frameworkPath
-                               error:nil]) {
-
-      if (![file hasSuffix:@"bundle"])
-        continue;
-
-      NSBundle *bundle =
-          [NSBundle bundleWithPath:
-                       [frameworkPath
-                           stringByAppendingPathComponent:
-                               file]];
-
-      if (bundle)
-        [assetBundles addObject:bundle];
     }
   }
 
+  // --------------------------------------------------------------------------
+  // Framework bundles
+  // --------------------------------------------------------------------------
+
+  NSString *frameworksPath =
+      [NSBundle.mainBundle.bundlePath
+          stringByAppendingPathComponent:
+              @"Frameworks"];
+
+  NSArray *frameworkFiles =
+      [NSFileManager.defaultManager
+          contentsOfDirectoryAtPath:
+              frameworksPath
+                             error:nil];
+
+  for (NSString *file in frameworkFiles) {
+
+    if (![file hasSuffix:@"framework"]) {
+      continue;
+    }
+
+    NSString *frameworkName =
+        [file stringByDeletingPathExtension];
+
+    NSString *frameworkPath =
+        [NSBundle.mainBundle
+            pathForResource:frameworkName
+                     ofType:@"framework"
+                inDirectory:@"Frameworks"];
+
+    if (!frameworkPath) {
+      continue;
+    }
+
+    NSBundle *bundle =
+        [NSBundle bundleWithPath:frameworkPath];
+
+    if (bundle) {
+      [assetBundles addObject:bundle];
+    }
+
+    NSArray *frameworkContents =
+        [NSFileManager.defaultManager
+            contentsOfDirectoryAtPath:
+                frameworkPath
+                               error:nil];
+
+    for (NSString *nestedFile
+         in frameworkContents) {
+
+      if (![nestedFile hasSuffix:@"bundle"]) {
+        continue;
+      }
+
+      NSString *nestedPath =
+          [frameworkPath
+              stringByAppendingPathComponent:
+                  nestedFile];
+
+      NSBundle *nestedBundle =
+          [NSBundle bundleWithPath:nestedPath];
+
+      if (nestedBundle) {
+        [assetBundles addObject:nestedBundle];
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Asset catalogs
+  // --------------------------------------------------------------------------
+
   for (NSBundle *bundle in assetBundles) {
 
-    NSError *error;
+    NSError *error = nil;
 
     CUICatalog *catalog =
         [[%c(CUICatalog) alloc]
@@ -1539,9 +1998,16 @@ forControlEvents:UIControlEventTouchUpInside];
             fromBundle:bundle
             error:&error];
 
-    if (!error)
+    if (!error &&
+        catalog) {
+
       [assetCatalogs addObject:catalog];
+    }
   }
+
+  // --------------------------------------------------------------------------
+  // Default preferences
+  // --------------------------------------------------------------------------
 
   NSUserDefaults *defaults =
       NSUserDefaults.standardUserDefaults;
@@ -1549,51 +2015,68 @@ forControlEvents:UIControlEventTouchUpInside];
   if (![defaults
           objectForKey:kRedditFilterPromoted]) {
 
-    [defaults setBool:true
+    [defaults setBool:YES
                forKey:kRedditFilterPromoted];
   }
 
   if (![defaults
           objectForKey:kRedditFilterRecommended]) {
 
-    [defaults setBool:false
+    [defaults setBool:NO
                forKey:kRedditFilterRecommended];
   }
 
   if (![defaults
           objectForKey:kRedditFilterNSFW]) {
 
-    [defaults setBool:false
+    [defaults setBool:NO
                forKey:kRedditFilterNSFW];
   }
 
   if (![defaults
           objectForKey:kRedditFilterAwards]) {
 
-    [defaults setBool:false
+    [defaults setBool:NO
                forKey:kRedditFilterAwards];
   }
 
   if (![defaults
           objectForKey:kRedditFilterScores]) {
 
-    [defaults setBool:false
+    [defaults setBool:NO
                forKey:kRedditFilterScores];
   }
 
   if (![defaults
           objectForKey:kRedditFilterAutoCollapseAutoMod]) {
 
-    [defaults setBool:false
+    [defaults setBool:NO
                forKey:kRedditFilterAutoCollapseAutoMod];
   }
 
   NSLog(@"[RedditFilter] Loaded - open the profile drawer to find 'RedditFilter Settings'");
 
-  // IMPORTANT:
-  // There is only ONE %init for the implicit _ungrouped group.
-  // The previous standalone %init; caused:
-  // "re-%init of %group _ungrouped"
+  // ==========================================================================
+  // IMPORTANT LOGOS INITIALIZATION
+  // ==========================================================================
+  //
+  // There is intentionally ONLY ONE %init here.
+  //
+  // DO NOT add:
+  //
+  //     %init;
+  //
+  // before this.
+  //
+  // All hooks above are in Logos' implicit _ungrouped group.
+  //
+  // The previous error:
+  //
+  //     re-%init of %group _ungrouped
+  //
+  // was caused by initializing this group twice.
+  //
+  // ==========================================================================
 
   %init(
       Comment =
