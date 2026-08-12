@@ -930,7 +930,6 @@ static void rf_addSettingsButtonToView(
   }
 
   CGFloat btnHeight = 50.0;
-
   CGFloat contentMaxY = 0;
 
   for (UIView *sub in hostingView.subviews) {
@@ -1220,9 +1219,7 @@ forControlEvents:UIControlEventTouchUpInside];
 
 - (NSArray *)postsAndCommentsFromData:(id)data {
 
-  // Do not use filteredObjects(%orig) directly.
-  // Logos expands %orig into a generated function call.
-
+  // Store %orig first. Do not use filteredObjects(%orig) directly.
   NSArray *objects = %orig;
 
   return filteredObjects(objects);
@@ -1593,7 +1590,10 @@ forControlEvents:UIControlEventTouchUpInside];
 
   NSLog(@"[RedditFilter] Loaded - open the profile drawer to find 'RedditFilter Settings'");
 
-  %init;
+  // IMPORTANT:
+  // There is only ONE %init for the implicit _ungrouped group.
+  // The previous standalone %init; caused:
+  // "re-%init of %group _ungrouped"
 
   %init(
       Comment =
