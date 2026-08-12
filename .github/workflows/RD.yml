@@ -2,12 +2,14 @@ name: RedditDeluxe
 
 on:
   push:
+
   workflow_dispatch:
     inputs:
       create_release:
         description: "Build IPA and create draft release"
         default: false
         type: boolean
+
       ipa_url:
         description: "Direct URL to Decrypted IPA file"
         type: string
@@ -18,7 +20,13 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - uses: actions/checkout@v4
+
+      # ======================================================================
+      # CHECKOUT
+      # ======================================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -69,7 +77,7 @@ jobs:
             xxd
 
       # ======================================================================
-      # THEOS JAILED DEPENDENCIES
+      # THEOS-JAILED DEPENDENCIES
       # ======================================================================
 
       - name: Install theos-jailed dependencies
@@ -106,9 +114,10 @@ jobs:
             --output /tmp/libplist.tar.bz2 \
             "https://github.com/libimobiledevice/libplist/releases/download/2.6.0/libplist-2.6.0.tar.bz2"
 
-          test -s /tmp/libplist.tar.bz2
-
-          echo "Extracting libplist..."
+          if [ ! -s /tmp/libplist.tar.bz2 ]; then
+            echo "::error::libplist download is empty."
+            exit 1
+          fi
 
           rm -rf libplist-2.6.0
 
@@ -241,8 +250,6 @@ jobs:
 
           if [ "$FILE_SIZE" -eq 0 ]; then
             echo "::error::The server returned an empty file."
-            echo ""
-            echo "The download URL is not returning an IPA."
             echo "Please provide another direct IPA URL."
             rm -f "$IPA"
             exit 1
@@ -281,7 +288,6 @@ jobs:
             echo " - The IPA download was incomplete"
 
             rm -f "$IPA"
-
             exit 1
           fi
 
@@ -329,7 +335,11 @@ jobs:
 
           echo "Reading Info.plist..."
 
-          INFO_PLIST="$(unzip -Z1 "$IPA" | grep -E '^Payload/[^/]+\.app/Info\.plist$' | head -n1)"
+          INFO_PLIST="$(
+            unzip -Z1 "$IPA" |
+            grep -E '^Payload/[^/]+\.app/Info\.plist$' |
+            head -n1
+          )"
 
           if [ -z "$INFO_PLIST" ]; then
             echo "::error::Could not find Payload/*.app/Info.plist."
@@ -341,21 +351,11 @@ jobs:
           unzip -p "$IPA" "$INFO_PLIST" > /tmp/RedditInfo.plist
 
           bundle_id="$(
-            /usr/bin/python3 -c '
-import plistlib
-with open("/tmp/RedditInfo.plist", "rb") as f:
-    p = plistlib.load(f)
-print(p.get("CFBundleIdentifier", ""))
-'
+            python3 -c "import plistlib; p=plistlib.load(open('/tmp/RedditInfo.plist','rb')); print(p.get('CFBundleIdentifier',''))"
           )"
 
           version="$(
-            /usr/bin/python3 -c '
-import plistlib
-with open("/tmp/RedditInfo.plist", "rb") as f:
-    p = plistlib.load(f)
-print(p.get("CFBundleShortVersionString", ""))
-'
+            python3 -c "import plistlib; p=plistlib.load(open('/tmp/RedditInfo.plist','rb')); print(p.get('CFBundleShortVersionString',''))"
           )"
 
           if [ -z "$bundle_id" ]; then
@@ -386,7 +386,7 @@ print(p.get("CFBundleShortVersionString", ""))
           cache-dir-sdks: ${{ github.workspace }}/theos/sdks
 
       # ======================================================================
-      # CHECKOUT THEOS JAILED
+      # CHECKOUT THEOS-JAILED
       # ======================================================================
 
       - name: Checkout theos-jailed
@@ -398,7 +398,7 @@ print(p.get("CFBundleShortVersionString", ""))
           submodules: recursive
 
       # ======================================================================
-      # INSTALL THEOS JAILED
+      # INSTALL THEOS-JAILED
       # ======================================================================
 
       - name: Install theos-jailed
@@ -494,7 +494,7 @@ print(p.get("CFBundleShortVersionString", ""))
           APP_VERSION: ${{ steps.ipa_info.outputs.version }}
 
       # ======================================================================
-      # INJECT DYLIBS
+      # COPY PAYLOADS AND INJECT DYLIBS
       # ======================================================================
 
       - name: Copy payloads and inject dylibs automatically
@@ -533,7 +533,6 @@ print(p.get("CFBundleShortVersionString", ""))
           WORK_DIR="${{ github.workspace }}/patched_ipa"
 
           rm -rf "$WORK_DIR"
-
           mkdir -p "$WORK_DIR"
 
           unzip -q "$IPA_FILE" -d "$WORK_DIR"
@@ -546,9 +545,7 @@ print(p.get("CFBundleShortVersionString", ""))
             head -n1
           )"
 
-          if [ -z "${APP_PATH:-}" ] ||
-             [ ! -d "$APP_PATH" ]; then
-
+          if [ -z "${APP_PATH:-}" ] || [ ! -d "$APP_PATH" ]; then
             echo "::error::App bundle not found."
             exit 1
           fi
@@ -559,7 +556,7 @@ print(p.get("CFBundleShortVersionString", ""))
           mkdir -p "$APP_PATH/Frameworks"
 
           # ------------------------------------------------------------------
-          # Copy dylibs
+          # COPY DYLIBS
           # ------------------------------------------------------------------
 
           echo ""
@@ -580,11 +577,10 @@ print(p.get("CFBundleShortVersionString", ""))
             -exec cp -f {} "$APP_PATH/Frameworks/" \;
 
           # ------------------------------------------------------------------
-          # libsubstrate
+          # LIBSUBSTRATE
           # ------------------------------------------------------------------
 
           if [ -f ".dylib/libsubstrate.dylib" ]; then
-
             cp -f \
               ".dylib/libsubstrate.dylib" \
               "$APP_PATH/libsubstrate.dylib"
@@ -592,11 +588,10 @@ print(p.get("CFBundleShortVersionString", ""))
             cp -f \
               ".dylib/libsubstrate.dylib" \
               "$APP_PATH/Frameworks/libsubstrate.dylib"
-
           fi
 
           # ------------------------------------------------------------------
-          # Frameworks
+          # FRAMEWORKS
           # ------------------------------------------------------------------
 
           echo ""
@@ -611,19 +606,11 @@ print(p.get("CFBundleShortVersionString", ""))
             -exec cp -a {} "$APP_PATH/Frameworks/" \;
 
           # ------------------------------------------------------------------
-          # Main executable
+          # MAIN EXECUTABLE
           # ------------------------------------------------------------------
 
           EXECUTABLE="$(
-            /usr/bin/python3 -c '
-import plistlib
-import sys
-
-with open(sys.argv[1], "rb") as f:
-    plist = plistlib.load(f)
-
-print(plist["CFBundleExecutable"])
-' "$APP_PATH/Info.plist"
+            python3 -c "import plistlib; p=plistlib.load(open('$APP_PATH/Info.plist','rb')); print(p['CFBundleExecutable'])"
           )"
 
           EXECUTABLE_PATH="$APP_PATH/$EXECUTABLE"
@@ -638,7 +625,7 @@ print(plist["CFBundleExecutable"])
           fi
 
           # ------------------------------------------------------------------
-          # Find dylibs
+          # FIND DYLIBS
           # ------------------------------------------------------------------
 
           echo ""
@@ -664,14 +651,14 @@ print(plist["CFBundleExecutable"])
           printf '%s\n' "${ALL_DYLIBS[@]}"
 
           # ------------------------------------------------------------------
-          # Excluded dylibs
+          # EXCLUDED DYLIBS
           # ------------------------------------------------------------------
 
           SAFE_EXCLUDE_DYLIBS=(
           )
 
           # ------------------------------------------------------------------
-          # Priority dylibs
+          # PRIORITY DYLIBS
           # ------------------------------------------------------------------
 
           PRIORITY_DYLIBS=(
@@ -680,32 +667,25 @@ print(plist["CFBundleExecutable"])
           )
 
           # ------------------------------------------------------------------
-          # Filter dylibs
+          # FILTER DYLIBS
           # ------------------------------------------------------------------
 
           FILTERED_DYLIBS=()
 
           for lib in "${ALL_DYLIBS[@]}"; do
-
             skip=0
 
             for excluded in "${SAFE_EXCLUDE_DYLIBS[@]}"; do
-
               if [ "$lib" = "$excluded" ]; then
-
                 skip=1
-
                 echo "Skipping excluded dylib: $lib"
-
                 break
               fi
-
             done
 
             if [ "$skip" -eq 0 ]; then
               FILTERED_DYLIBS+=("$lib")
             fi
-
           done
 
           if [ "${#FILTERED_DYLIBS[@]}" -eq 0 ]; then
@@ -714,40 +694,32 @@ print(plist["CFBundleExecutable"])
           fi
 
           # ------------------------------------------------------------------
-          # Build injection order
+          # BUILD INJECTION ORDER
           # ------------------------------------------------------------------
 
           ORDERED_DYLIBS=()
 
           for priority in "${PRIORITY_DYLIBS[@]}"; do
-
             for lib in "${FILTERED_DYLIBS[@]}"; do
-
               if [ "$lib" = "$priority" ]; then
                 ORDERED_DYLIBS+=("$lib")
               fi
-
             done
-
           done
 
           for lib in "${FILTERED_DYLIBS[@]}"; do
-
             already_added=0
 
             for added in "${ORDERED_DYLIBS[@]}"; do
-
               if [ "$lib" = "$added" ]; then
                 already_added=1
                 break
               fi
-
             done
 
             if [ "$already_added" -eq 0 ]; then
               ORDERED_DYLIBS+=("$lib")
             fi
-
           done
 
           echo ""
@@ -758,7 +730,7 @@ print(plist["CFBundleExecutable"])
           printf '%s\n' "${ORDERED_DYLIBS[@]}"
 
           # ------------------------------------------------------------------
-          # Inject dylibs
+          # INJECT DYLIBS
           # ------------------------------------------------------------------
 
           echo ""
@@ -767,7 +739,6 @@ print(plist["CFBundleExecutable"])
           echo "========================================"
 
           for lib in "${ORDERED_DYLIBS[@]}"; do
-
             LIB_PATH="@executable_path/Frameworks/$lib"
 
             echo "Injecting: $LIB_PATH"
@@ -777,11 +748,10 @@ print(plist["CFBundleExecutable"])
               --inplace \
               "$LIB_PATH" \
               "$EXECUTABLE_PATH"
-
           done
 
           # ------------------------------------------------------------------
-          # Locate ldid
+          # LOCATE LDID
           # ------------------------------------------------------------------
 
           echo ""
@@ -790,31 +760,26 @@ print(plist["CFBundleExecutable"])
           echo "========================================"
 
           if command -v ldid >/dev/null 2>&1; then
-
             LDID_BIN="$(command -v ldid)"
 
-          elif [ -n "${THEOS:-}" ] &&
+          elif [ -n "${THEOS:-}" ] && \
                [ -x "${THEOS}/toolchain/linux/iphone/bin/ldid" ]; then
-
             LDID_BIN="${THEOS}/toolchain/linux/iphone/bin/ldid"
 
-          elif [ -n "${THEOS:-}" ] &&
+          elif [ -n "${THEOS:-}" ] && \
                [ -x "${THEOS}/bin/ldid" ]; then
-
             LDID_BIN="${THEOS}/bin/ldid"
 
           else
-
             echo "::error::ldid not found."
             exit 1
-
           fi
 
           echo "Using ldid:"
           echo "$LDID_BIN"
 
           # ------------------------------------------------------------------
-          # Sign dylibs
+          # SIGN DYLIBS
           # ------------------------------------------------------------------
 
           echo ""
@@ -823,45 +788,37 @@ print(plist["CFBundleExecutable"])
           echo "========================================"
 
           for lib in "${ORDERED_DYLIBS[@]}"; do
-
             if [ -f "$APP_PATH/Frameworks/$lib" ]; then
-
               echo "Signing Frameworks/$lib"
 
               "$LDID_BIN" \
                 -S \
                 "$APP_PATH/Frameworks/$lib"
-
             fi
-
           done
 
           # ------------------------------------------------------------------
-          # Sign libsubstrate
+          # SIGN LIBSUBSTRATE
           # ------------------------------------------------------------------
 
           if [ -f "$APP_PATH/libsubstrate.dylib" ]; then
-
             echo "Signing root libsubstrate.dylib..."
 
             "$LDID_BIN" \
               -S \
               "$APP_PATH/libsubstrate.dylib"
-
           fi
 
           if [ -f "$APP_PATH/Frameworks/libsubstrate.dylib" ]; then
-
             echo "Signing Frameworks/libsubstrate.dylib..."
 
             "$LDID_BIN" \
               -S \
               "$APP_PATH/Frameworks/libsubstrate.dylib"
-
           fi
 
           # ------------------------------------------------------------------
-          # Sign framework binaries
+          # SIGN FRAMEWORK BINARIES
           # ------------------------------------------------------------------
 
           echo ""
@@ -871,26 +828,20 @@ print(plist["CFBundleExecutable"])
             -maxdepth 2 \
             -type f |
           while read -r bin; do
-
             case "$bin" in
-
               *.framework/*)
-
                 echo "Signing framework binary: $bin"
 
                 "$LDID_BIN" \
                   -S \
                   "$bin" ||
                   true
-
                 ;;
-
             esac
-
           done
 
           # ------------------------------------------------------------------
-          # Sign main executable
+          # SIGN MAIN EXECUTABLE
           # ------------------------------------------------------------------
 
           echo ""
@@ -901,7 +852,7 @@ print(plist["CFBundleExecutable"])
             "$EXECUTABLE_PATH"
 
           # ------------------------------------------------------------------
-          # Verify dylibs
+          # VERIFY DYLIB LOAD COMMANDS
           # ------------------------------------------------------------------
 
           echo ""
@@ -910,21 +861,17 @@ print(plist["CFBundleExecutable"])
           echo "========================================"
 
           if command -v llvm-objdump >/dev/null 2>&1; then
-
             llvm-objdump \
               --macho \
               --dylibs-used \
               "$EXECUTABLE_PATH" ||
               true
-
           else
-
             echo "llvm-objdump not available."
-
           fi
 
           # ------------------------------------------------------------------
-          # Repack IPA
+          # REPACK IPA
           # ------------------------------------------------------------------
 
           echo ""
@@ -973,7 +920,6 @@ print(plist["CFBundleExecutable"])
           shopt -s nullglob
 
           for file in packages/*.ipa packages/*.zip; do
-
             [ -f "$file" ] || continue
 
             dir="$(dirname "$file")"
@@ -985,20 +931,15 @@ print(plist["CFBundleExecutable"])
             new="${new//redditfilter/redditdeluxe}"
 
             if [ "$new" != "$base" ]; then
-
               echo "Renaming:"
               echo "$base -> $new"
 
               mv -f \
                 "$file" \
                 "$dir/$new"
-
             else
-
               echo "No rename needed for $base"
-
             fi
-
           done
 
       # ======================================================================
