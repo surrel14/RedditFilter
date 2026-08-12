@@ -186,7 +186,7 @@ jobs:
           echo "Checking Payload..."
 
           if ! unzip -l "$IPA" | grep -q "Payload/"; then
-            echo "::error::Automatically downloaded IPA does not contain Payload/."
+            echo "::error::Automatically downloaded IPA does not contain Payload."
             exit 1
           fi
 
@@ -203,41 +203,84 @@ jobs:
           set -euo pipefail
 
           IPA="${{ github.workspace }}/App.ipa"
-          URL="${{ inputs.ipa_url }}"
+          ORIGINAL_URL="${{ inputs.ipa_url }}"
 
           echo "========================================"
           echo "Downloading Reddit IPA"
           echo "========================================"
-          echo "URL: $URL"
+          echo "Original URL:"
+          echo "$ORIGINAL_URL"
           echo "========================================"
 
           rm -f "$IPA"
 
-          HTTP_CODE="$(
-            curl \
-              --fail \
-              --location \
-              --show-error \
-              --silent \
-              --retry 5 \
-              --retry-delay 5 \
-              --retry-all-errors \
-              --connect-timeout 30 \
-              --max-time 600 \
-              --user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36" \
-              --output "$IPA" \
-              --write-out "%{http_code}" \
-              "$URL"
-          )"
+          URL="$ORIGINAL_URL"
+
+          # ==================================================================
+          # DROPBOX DIRECT DOWNLOAD
+          #
+          # Dropbox shared links commonly use:
+          #
+          #   dl=0
+          #
+          # which returns the Dropbox web page.
+          #
+          # We automatically change it to:
+          #
+          #   dl=1
+          #
+          # which requests the actual file.
+          # ==================================================================
+
+          if [[ "$URL" == *"dropbox.com"* ]]; then
+
+            echo "Dropbox URL detected."
+
+            if [[ "$URL" == *"dl=0"* ]]; then
+
+              URL="${URL//dl=0/dl=1}"
+
+            elif [[ "$URL" == *"dl="* ]]; then
+
+              URL="$(printf '%s' "$URL" | sed 's/[?&]dl=[^&]*/dl=1/')"
+
+            else
+
+              if [[ "$URL" == *"?"* ]]; then
+                URL="${URL}&dl=1"
+              else
+                URL="${URL}?dl=1"
+              fi
+
+            fi
+
+            echo "Using Dropbox direct-download URL:"
+            echo "$URL"
+          fi
 
           echo ""
-          echo "HTTP status: $HTTP_CODE"
+          echo "========================================"
+          echo "Downloading"
+          echo "========================================"
 
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-            echo "::error::The IPA server returned HTTP status $HTTP_CODE."
-            rm -f "$IPA"
-            exit 1
-          fi
+          curl \
+            --fail \
+            --location \
+            --show-error \
+            --silent \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 1200 \
+            --user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36" \
+            --output "$IPA" \
+            "$URL"
+
+          echo ""
+          echo "========================================"
+          echo "Downloaded file information"
+          echo "========================================"
 
           if [ ! -f "$IPA" ]; then
             echo "::error::IPA file was not created."
@@ -246,29 +289,60 @@ jobs:
 
           FILE_SIZE=$(stat -c%s "$IPA")
 
-          echo "Downloaded size: $FILE_SIZE bytes"
+          echo "Size: $FILE_SIZE bytes"
 
-          if [ "$FILE_SIZE" -eq 0 ]; then
-            echo "::error::The server returned an empty file."
-            echo "Please provide another direct IPA URL."
-            rm -f "$IPA"
+          file "$IPA"
+          ls -lh "$IPA"
+
+          if [ "$FILE_SIZE" -lt 1024 ]; then
+
+            echo "::error::Downloaded file is suspiciously small."
+
+            echo ""
+            echo "First bytes:"
+            xxd -l 256 "$IPA" || true
+
             exit 1
           fi
 
           echo ""
           echo "========================================"
-          echo "Downloaded file information"
+          echo "Checking downloaded file type"
           echo "========================================"
 
-          file "$IPA"
-          ls -lh "$IPA"
+          FILE_TYPE="$(file -b "$IPA")"
+
+          echo "Detected type:"
+          echo "$FILE_TYPE"
+
+          # ==================================================================
+          # CHECK FOR HTML
+          # ==================================================================
+
+          if [[ "$FILE_TYPE" == *"HTML"* ]] || \
+             [[ "$FILE_TYPE" == *"HTML document"* ]]; then
+
+            echo "::error::The server returned an HTML page instead of the IPA."
+
+            echo ""
+            echo "First bytes of downloaded file:"
+            xxd -l 512 "$IPA" || true
+
+            echo ""
+            echo "The supplied URL did not return the IPA."
+
+            rm -f "$IPA"
+
+            exit 1
+          fi
 
           echo ""
           echo "========================================"
-          echo "Validating IPA archive"
+          echo "Validating IPA ZIP archive"
           echo "========================================"
 
           if ! unzip -t "$IPA" >/dev/null 2>&1; then
+
             echo "::error::Downloaded file is not a valid IPA/ZIP archive."
 
             echo ""
@@ -276,18 +350,11 @@ jobs:
             file "$IPA"
 
             echo ""
-            echo "First bytes of downloaded file:"
-            head -c 200 "$IPA" | xxd || true
-
-            echo ""
-            echo "Possible causes:"
-            echo " - The URL returned HTML instead of an IPA"
-            echo " - The download URL expired"
-            echo " - The hosting service blocked GitHub Actions"
-            echo " - The file was removed"
-            echo " - The IPA download was incomplete"
+            echo "First bytes:"
+            xxd -l 256 "$IPA" || true
 
             rm -f "$IPA"
+
             exit 1
           fi
 
@@ -299,8 +366,11 @@ jobs:
           echo "========================================"
 
           if ! unzip -l "$IPA" | grep -q "Payload/"; then
-            echo "::error::The downloaded archive does not contain a Payload directory."
+
+            echo "::error::Valid ZIP archive does not contain Payload/."
+
             rm -f "$IPA"
+
             exit 1
           fi
 
@@ -311,7 +381,9 @@ jobs:
           echo "Reddit IPA downloaded successfully"
           echo "========================================"
 
-          echo "IPA: $IPA"
+          echo "IPA:"
+          echo "$IPA"
+
           echo "Size:"
           du -h "$IPA"
 
@@ -346,7 +418,8 @@ jobs:
             exit 1
           fi
 
-          echo "Info.plist: $INFO_PLIST"
+          echo "Info.plist:"
+          echo "$INFO_PLIST"
 
           unzip -p "$IPA" "$INFO_PLIST" > /tmp/RedditInfo.plist
 
@@ -524,7 +597,7 @@ jobs:
           APP_VERSION: ${{ steps.ipa_info.outputs.version }}
 
       # ======================================================================
-      # COPY PAYLOADS AND INJECT DYLIBS
+      # INJECT DYLIBS
       # ======================================================================
 
       - name: Copy payloads and inject dylibs automatically
@@ -553,12 +626,8 @@ jobs:
             exit 1
           fi
 
-          echo "IPA: $IPA_FILE"
-
-          echo ""
-          echo "========================================"
-          echo "Preparing IPA"
-          echo "========================================"
+          echo "IPA:"
+          echo "$IPA_FILE"
 
           WORK_DIR="${{ github.workspace }}/patched_ipa"
 
@@ -611,6 +680,7 @@ jobs:
           # ------------------------------------------------------------------
 
           if [ -f ".dylib/libsubstrate.dylib" ]; then
+
             cp -f \
               ".dylib/libsubstrate.dylib" \
               "$APP_PATH/libsubstrate.dylib"
@@ -618,6 +688,7 @@ jobs:
             cp -f \
               ".dylib/libsubstrate.dylib" \
               "$APP_PATH/Frameworks/libsubstrate.dylib"
+
           fi
 
           # ------------------------------------------------------------------
@@ -697,25 +768,29 @@ jobs:
           )
 
           # ------------------------------------------------------------------
-          # FILTER DYLIBS
+          # FILTER
           # ------------------------------------------------------------------
 
           FILTERED_DYLIBS=()
 
           for lib in "${ALL_DYLIBS[@]}"; do
+
             skip=0
 
             for excluded in "${SAFE_EXCLUDE_DYLIBS[@]}"; do
+
               if [ "$lib" = "$excluded" ]; then
                 skip=1
                 echo "Skipping excluded dylib: $lib"
                 break
               fi
+
             done
 
             if [ "$skip" -eq 0 ]; then
               FILTERED_DYLIBS+=("$lib")
             fi
+
           done
 
           if [ "${#FILTERED_DYLIBS[@]}" -eq 0 ]; then
@@ -730,26 +805,34 @@ jobs:
           ORDERED_DYLIBS=()
 
           for priority in "${PRIORITY_DYLIBS[@]}"; do
+
             for lib in "${FILTERED_DYLIBS[@]}"; do
+
               if [ "$lib" = "$priority" ]; then
                 ORDERED_DYLIBS+=("$lib")
               fi
+
             done
+
           done
 
           for lib in "${FILTERED_DYLIBS[@]}"; do
+
             already_added=0
 
             for added in "${ORDERED_DYLIBS[@]}"; do
+
               if [ "$lib" = "$added" ]; then
                 already_added=1
                 break
               fi
+
             done
 
             if [ "$already_added" -eq 0 ]; then
               ORDERED_DYLIBS+=("$lib")
             fi
+
           done
 
           echo ""
@@ -760,7 +843,7 @@ jobs:
           printf '%s\n' "${ORDERED_DYLIBS[@]}"
 
           # ------------------------------------------------------------------
-          # INJECT DYLIBS
+          # INJECT
           # ------------------------------------------------------------------
 
           echo ""
@@ -769,15 +852,18 @@ jobs:
           echo "========================================"
 
           for lib in "${ORDERED_DYLIBS[@]}"; do
+
             LIB_PATH="@executable_path/Frameworks/$lib"
 
-            echo "Injecting: $LIB_PATH"
+            echo "Injecting:"
+            echo "$LIB_PATH"
 
             insert-dylib \
               --all-yes \
               --inplace \
               "$LIB_PATH" \
               "$EXECUTABLE_PATH"
+
           done
 
           # ------------------------------------------------------------------
@@ -790,19 +876,24 @@ jobs:
           echo "========================================"
 
           if command -v ldid >/dev/null 2>&1; then
+
             LDID_BIN="$(command -v ldid)"
 
           elif [ -n "${THEOS:-}" ] && \
                [ -x "${THEOS}/toolchain/linux/iphone/bin/ldid" ]; then
+
             LDID_BIN="${THEOS}/toolchain/linux/iphone/bin/ldid"
 
           elif [ -n "${THEOS:-}" ] && \
                [ -x "${THEOS}/bin/ldid" ]; then
+
             LDID_BIN="${THEOS}/bin/ldid"
 
           else
+
             echo "::error::ldid not found."
             exit 1
+
           fi
 
           echo "Using ldid:"
@@ -818,13 +909,17 @@ jobs:
           echo "========================================"
 
           for lib in "${ORDERED_DYLIBS[@]}"; do
+
             if [ -f "$APP_PATH/Frameworks/$lib" ]; then
+
               echo "Signing Frameworks/$lib"
 
               "$LDID_BIN" \
                 -S \
                 "$APP_PATH/Frameworks/$lib"
+
             fi
+
           done
 
           # ------------------------------------------------------------------
@@ -832,19 +927,23 @@ jobs:
           # ------------------------------------------------------------------
 
           if [ -f "$APP_PATH/libsubstrate.dylib" ]; then
+
             echo "Signing root libsubstrate.dylib..."
 
             "$LDID_BIN" \
               -S \
               "$APP_PATH/libsubstrate.dylib"
+
           fi
 
           if [ -f "$APP_PATH/Frameworks/libsubstrate.dylib" ]; then
+
             echo "Signing Frameworks/libsubstrate.dylib..."
 
             "$LDID_BIN" \
               -S \
               "$APP_PATH/Frameworks/libsubstrate.dylib"
+
           fi
 
           # ------------------------------------------------------------------
@@ -858,16 +957,23 @@ jobs:
             -maxdepth 2 \
             -type f |
           while read -r bin; do
+
             case "$bin" in
+
               *.framework/*)
-                echo "Signing framework binary: $bin"
+
+                echo "Signing framework binary:"
+                echo "$bin"
 
                 "$LDID_BIN" \
                   -S \
                   "$bin" ||
                   true
+
                 ;;
+
             esac
+
           done
 
           # ------------------------------------------------------------------
@@ -882,7 +988,7 @@ jobs:
             "$EXECUTABLE_PATH"
 
           # ------------------------------------------------------------------
-          # VERIFY DYLIB LOAD COMMANDS
+          # VERIFY LOAD COMMANDS
           # ------------------------------------------------------------------
 
           echo ""
@@ -891,13 +997,17 @@ jobs:
           echo "========================================"
 
           if command -v llvm-objdump >/dev/null 2>&1; then
+
             llvm-objdump \
               --macho \
               --dylibs-used \
               "$EXECUTABLE_PATH" ||
               true
+
           else
+
             echo "llvm-objdump not available."
+
           fi
 
           # ------------------------------------------------------------------
@@ -950,6 +1060,7 @@ jobs:
           shopt -s nullglob
 
           for file in packages/*.ipa packages/*.zip; do
+
             [ -f "$file" ] || continue
 
             dir="$(dirname "$file")"
@@ -961,15 +1072,20 @@ jobs:
             new="${new//redditfilter/redditdeluxe}"
 
             if [ "$new" != "$base" ]; then
+
               echo "Renaming:"
               echo "$base -> $new"
 
               mv -f \
                 "$file" \
                 "$dir/$new"
+
             else
+
               echo "No rename needed for $base"
+
             fi
+
           done
 
       # ======================================================================
