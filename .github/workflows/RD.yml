@@ -22,31 +22,109 @@ jobs:
         with:
           submodules: recursive
 
+      # ======================================================================
+      # PACKAGE INFO
+      # ======================================================================
+
       - name: Get package info
         id: package_info
+        shell: bash
         run: |
+          set -euo pipefail
+
           version=$(grep "PACKAGE_VERSION =" Makefile | cut -d' ' -f3 || true)
+
           if [ -z "$version" ]; then
-            version=$(grep "Version:" control | cut -d' ' -f2)
+            version=$(grep "Version:" control | cut -d' ' -f2 || true)
           fi
-          echo "id=$(grep "Package:" control | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+          package_id=$(grep "Package:" control | cut -d' ' -f2 || true)
+
+          echo "id=$package_id" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+          echo "Package ID: $package_id"
+          echo "Package version: $version"
+
+      # ======================================================================
+      # DEPENDENCIES
+      # ======================================================================
+
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt update
-          sudo apt install -y rsync unzip zip python3 python3-pip file curl git
+
+          sudo apt install -y \
+            rsync \
+            unzip \
+            zip \
+            python3 \
+            python3-pip \
+            file \
+            curl \
+            git \
+            xxd
+
+      # ======================================================================
+      # THEOS JAILED DEPENDENCIES
+      # ======================================================================
 
       - name: Install theos-jailed dependencies
         if: ${{ inputs.create_release }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt update
-          sudo apt install -y build-essential checkinstall autoconf automake libtool-bin llvm xmlstarlet
-          curl -L https://github.com/libimobiledevice/libplist/releases/download/2.6.0/libplist-2.6.0.tar.bz2 | bzip2 -d | tar -x
-          cd libplist*
+
+          sudo apt install -y \
+            build-essential \
+            checkinstall \
+            autoconf \
+            automake \
+            libtool-bin \
+            llvm \
+            xmlstarlet
+
+          rm -f /tmp/libplist.tar.bz2
+
+          echo "Downloading libplist..."
+
+          curl \
+            --fail \
+            --location \
+            --show-error \
+            --silent \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 300 \
+            --output /tmp/libplist.tar.bz2 \
+            "https://github.com/libimobiledevice/libplist/releases/download/2.6.0/libplist-2.6.0.tar.bz2"
+
+          test -s /tmp/libplist.tar.bz2
+
+          echo "Extracting libplist..."
+
+          rm -rf libplist-2.6.0
+
+          tar -xjf /tmp/libplist.tar.bz2
+
+          cd libplist-2.6.0
+
           ./configure
+
           sudo make install
+
           sudo ldconfig
+
+      # ======================================================================
+      # DOWNLOAD IPA - AUTOMATIC
+      # ======================================================================
 
       - name: Download IPA (Auto)
         if: ${{ inputs.create_release && !inputs.ipa_url }}
@@ -57,19 +135,248 @@ jobs:
           path: ${{ github.workspace }}/App.ipa
           token: ${{ secrets.DECRYPTEDAPPSTORE_SESSION_TOKEN }}
 
+      # ======================================================================
+      # VALIDATE AUTOMATIC IPA
+      # ======================================================================
+
+      - name: Validate Auto IPA
+        if: ${{ inputs.create_release && !inputs.ipa_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPA="${{ github.workspace }}/App.ipa"
+
+          echo "========================================"
+          echo "Validating automatically downloaded IPA"
+          echo "========================================"
+
+          if [ ! -f "$IPA" ]; then
+            echo "::error::Automatic IPA download did not create App.ipa."
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -c%s "$IPA")
+
+          echo "File size: $FILE_SIZE bytes"
+
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "::error::Automatically downloaded IPA is empty."
+            exit 1
+          fi
+
+          file "$IPA"
+
+          echo "Testing ZIP structure..."
+
+          if ! unzip -t "$IPA" >/dev/null 2>&1; then
+            echo "::error::Automatically downloaded IPA is not a valid ZIP archive."
+            exit 1
+          fi
+
+          echo "Checking Payload..."
+
+          if ! unzip -l "$IPA" | grep -q "Payload/"; then
+            echo "::error::Automatically downloaded IPA does not contain Payload/."
+            exit 1
+          fi
+
+          echo "Automatic IPA is valid."
+
+      # ======================================================================
+      # DOWNLOAD IPA - MANUAL
+      # ======================================================================
+
       - name: Download IPA (Manual)
         if: ${{ inputs.create_release && inputs.ipa_url }}
+        shell: bash
         run: |
-          curl -Lo "${{ github.workspace }}/App.ipa" "${{ inputs.ipa_url }}"
-          zip -T "${{ github.workspace }}/App.ipa"
+          set -euo pipefail
+
+          IPA="${{ github.workspace }}/App.ipa"
+          URL="${{ inputs.ipa_url }}"
+
+          echo "========================================"
+          echo "Downloading Reddit IPA"
+          echo "========================================"
+          echo "URL: $URL"
+          echo "========================================"
+
+          rm -f "$IPA"
+
+          HTTP_CODE="$(
+            curl \
+              --fail \
+              --location \
+              --show-error \
+              --silent \
+              --retry 5 \
+              --retry-delay 5 \
+              --retry-all-errors \
+              --connect-timeout 30 \
+              --max-time 600 \
+              --user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36" \
+              --output "$IPA" \
+              --write-out "%{http_code}" \
+              "$URL"
+          )"
+
+          echo ""
+          echo "HTTP status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::The IPA server returned HTTP status $HTTP_CODE."
+            rm -f "$IPA"
+            exit 1
+          fi
+
+          if [ ! -f "$IPA" ]; then
+            echo "::error::IPA file was not created."
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -c%s "$IPA")
+
+          echo "Downloaded size: $FILE_SIZE bytes"
+
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "::error::The server returned an empty file."
+            echo ""
+            echo "The download URL is not returning an IPA."
+            echo "Please provide another direct IPA URL."
+            rm -f "$IPA"
+            exit 1
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "Downloaded file information"
+          echo "========================================"
+
+          file "$IPA"
+          ls -lh "$IPA"
+
+          echo ""
+          echo "========================================"
+          echo "Validating IPA archive"
+          echo "========================================"
+
+          if ! unzip -t "$IPA" >/dev/null 2>&1; then
+            echo "::error::Downloaded file is not a valid IPA/ZIP archive."
+
+            echo ""
+            echo "File information:"
+            file "$IPA"
+
+            echo ""
+            echo "First bytes of downloaded file:"
+            head -c 200 "$IPA" | xxd || true
+
+            echo ""
+            echo "Possible causes:"
+            echo " - The URL returned HTML instead of an IPA"
+            echo " - The download URL expired"
+            echo " - The hosting service blocked GitHub Actions"
+            echo " - The file was removed"
+            echo " - The IPA download was incomplete"
+
+            rm -f "$IPA"
+
+            exit 1
+          fi
+
+          echo "IPA ZIP structure is valid."
+
+          echo ""
+          echo "========================================"
+          echo "Checking Payload"
+          echo "========================================"
+
+          if ! unzip -l "$IPA" | grep -q "Payload/"; then
+            echo "::error::The downloaded archive does not contain a Payload directory."
+            rm -f "$IPA"
+            exit 1
+          fi
+
+          echo "Payload directory found."
+
+          echo ""
+          echo "========================================"
+          echo "Reddit IPA downloaded successfully"
+          echo "========================================"
+
+          echo "IPA: $IPA"
+          echo "Size:"
+          du -h "$IPA"
+
+      # ======================================================================
+      # GET IPA INFO
+      # ======================================================================
 
       - name: Get IPA Info
         if: ${{ inputs.create_release }}
         id: ipa_info
+        shell: bash
         run: |
-          info=$(unzip -p "${{ github.workspace }}/App.ipa" Payload/*.app/Info.plist)
-          echo "bundle-id=$(echo "$info" | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleIdentifier\"]/following-sibling::*[1]/text()")" >> "$GITHUB_OUTPUT"
-          echo "version=$(echo "$info" | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleShortVersionString\"]/following-sibling::*[1]/text()")" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          IPA="${{ github.workspace }}/App.ipa"
+
+          if [ ! -s "$IPA" ]; then
+            echo "::error::App.ipa is missing or empty."
+            exit 1
+          fi
+
+          echo "Reading Info.plist..."
+
+          INFO_PLIST="$(unzip -Z1 "$IPA" | grep -E '^Payload/[^/]+\.app/Info\.plist$' | head -n1)"
+
+          if [ -z "$INFO_PLIST" ]; then
+            echo "::error::Could not find Payload/*.app/Info.plist."
+            exit 1
+          fi
+
+          echo "Info.plist: $INFO_PLIST"
+
+          unzip -p "$IPA" "$INFO_PLIST" > /tmp/RedditInfo.plist
+
+          bundle_id="$(
+            /usr/bin/python3 -c '
+import plistlib
+with open("/tmp/RedditInfo.plist", "rb") as f:
+    p = plistlib.load(f)
+print(p.get("CFBundleIdentifier", ""))
+'
+          )"
+
+          version="$(
+            /usr/bin/python3 -c '
+import plistlib
+with open("/tmp/RedditInfo.plist", "rb") as f:
+    p = plistlib.load(f)
+print(p.get("CFBundleShortVersionString", ""))
+'
+          )"
+
+          if [ -z "$bundle_id" ]; then
+            echo "::error::Could not read CFBundleIdentifier."
+            exit 1
+          fi
+
+          if [ -z "$version" ]; then
+            echo "::error::Could not read CFBundleShortVersionString."
+            exit 1
+          fi
+
+          echo "bundle-id=$bundle_id" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          echo "Bundle ID: $bundle_id"
+          echo "Version: $version"
+
+      # ======================================================================
+      # SETUP THEOS
+      # ======================================================================
 
       - name: Setup theos
         uses: level3tjg/theos-action@main
@@ -77,6 +384,10 @@ jobs:
           cache: true
           cache-dir-theos: ${{ github.workspace }}/theos
           cache-dir-sdks: ${{ github.workspace }}/theos/sdks
+
+      # ======================================================================
+      # CHECKOUT THEOS JAILED
+      # ======================================================================
 
       - name: Checkout theos-jailed
         if: ${{ inputs.create_release }}
@@ -86,42 +397,105 @@ jobs:
           path: theos-jailed
           submodules: recursive
 
+      # ======================================================================
+      # INSTALL THEOS JAILED
+      # ======================================================================
+
       - name: Install theos-jailed
         if: ${{ inputs.create_release }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           ./theos-jailed/install
+
+      # ======================================================================
+      # INSTALL INSERT-DYLIB
+      # ======================================================================
 
       - name: Install insert-dylib
         if: ${{ inputs.create_release }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt update
-          sudo apt install -y clang cargo rustc
+
+          sudo apt install -y \
+            clang \
+            cargo \
+            rustc
+
           rm -rf insert-dylib-src
-          git clone https://github.com/hookforge/insert-dylib.git insert-dylib-src
+
+          git clone \
+            --depth 1 \
+            https://github.com/hookforge/insert-dylib.git \
+            insert-dylib-src
+
           cd insert-dylib-src
+
           cargo build --release
-          sudo install -m 0755 target/release/insert-dylib /usr/local/bin/insert-dylib
-          /usr/local/bin/insert-dylib --help >/dev/null || true
+
+          sudo install \
+            -m 0755 \
+            target/release/insert-dylib \
+            /usr/local/bin/insert-dylib
+
+          /usr/local/bin/insert-dylib --help >/dev/null
+
+          echo "insert-dylib installed successfully."
+
+      # ======================================================================
+      # BUILD ROOTLESS DEB
+      # ======================================================================
 
       - name: Build rootless deb
-        run: make package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make package
+
         env:
           FINALPACKAGE: ${{ inputs.create_release }}
           THEOS_PACKAGE_SCHEME: rootless
 
+      # ======================================================================
+      # BUILD ROOTFUL DEB
+      # ======================================================================
+
       - name: Build rootful deb
-        run: make clean package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make clean package
+
         env:
           FINALPACKAGE: ${{ inputs.create_release }}
 
+      # ======================================================================
+      # BUILD IPA
+      # ======================================================================
+
       - name: Build IPA
         if: ${{ inputs.create_release }}
-        run: make package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make package
+
         env:
           FINALPACKAGE: 1
           SIDELOADED: 1
           IPA: ${{ github.workspace }}/App.ipa
           APP_VERSION: ${{ steps.ipa_info.outputs.version }}
+
+      # ======================================================================
+      # INJECT DYLIBS
+      # ======================================================================
 
       - name: Copy payloads and inject dylibs automatically
         if: ${{ inputs.create_release }}
@@ -129,172 +503,466 @@ jobs:
         run: |
           set -euo pipefail
 
-          IPA_FILE="$(ls -t packages/*.ipa | head -n1)"
-          if [ -z "${IPA_FILE:-}" ] || [ ! -f "$IPA_FILE" ]; then
-            echo "No IPA found in packages/"
+          echo "========================================"
+          echo "Locating generated IPA"
+          echo "========================================"
+
+          shopt -s nullglob
+
+          IPA_FILES=(packages/*.ipa)
+
+          if [ "${#IPA_FILES[@]}" -eq 0 ]; then
+            echo "::error::No IPA found in packages/."
             exit 1
           fi
 
+          IPA_FILE="$(ls -t packages/*.ipa | head -n1)"
+
+          if [ ! -f "$IPA_FILE" ]; then
+            echo "::error::IPA file does not exist."
+            exit 1
+          fi
+
+          echo "IPA: $IPA_FILE"
+
+          echo ""
+          echo "========================================"
+          echo "Preparing IPA"
+          echo "========================================"
+
           WORK_DIR="${{ github.workspace }}/patched_ipa"
+
           rm -rf "$WORK_DIR"
+
           mkdir -p "$WORK_DIR"
 
           unzip -q "$IPA_FILE" -d "$WORK_DIR"
 
-          APP_PATH="$(find "$WORK_DIR/Payload" -maxdepth 2 -type d -name "*.app" | head -n1)"
-          if [ -z "${APP_PATH:-}" ] || [ ! -d "$APP_PATH" ]; then
-            echo "App bundle not found"
+          APP_PATH="$(
+            find "$WORK_DIR/Payload" \
+              -maxdepth 2 \
+              -type d \
+              -name "*.app" |
+            head -n1
+          )"
+
+          if [ -z "${APP_PATH:-}" ] ||
+             [ ! -d "$APP_PATH" ]; then
+
+            echo "::error::App bundle not found."
             exit 1
           fi
 
+          echo "App bundle:"
+          echo "$APP_PATH"
+
           mkdir -p "$APP_PATH/Frameworks"
 
-          echo "Copying dylibs..."
-          find .dylib -maxdepth 1 -type f -name "*.dylib" ! -name "libsubstrate.dylib" -exec cp -f {} "$APP_PATH/Frameworks/" \;
+          # ------------------------------------------------------------------
+          # Copy dylibs
+          # ------------------------------------------------------------------
 
-          if [ -f ".dylib/libsubstrate.dylib" ]; then
-            cp -f ".dylib/libsubstrate.dylib" "$APP_PATH/libsubstrate.dylib"
-            cp -f ".dylib/libsubstrate.dylib" "$APP_PATH/Frameworks/libsubstrate.dylib"
+          echo ""
+          echo "========================================"
+          echo "Copying dylibs"
+          echo "========================================"
+
+          if [ ! -d ".dylib" ]; then
+            echo "::error::.dylib directory does not exist."
+            exit 1
           fi
 
-          echo "Copying frameworks..."
-          find .dylib -maxdepth 1 -type d -name "*.framework" -exec cp -a {} "$APP_PATH/Frameworks/" \;
+          find .dylib \
+            -maxdepth 1 \
+            -type f \
+            -name "*.dylib" \
+            ! -name "libsubstrate.dylib" \
+            -exec cp -f {} "$APP_PATH/Frameworks/" \;
 
-          EXECUTABLE="$(/usr/bin/python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleExecutable"])' "$APP_PATH/Info.plist")"
+          # ------------------------------------------------------------------
+          # libsubstrate
+          # ------------------------------------------------------------------
+
+          if [ -f ".dylib/libsubstrate.dylib" ]; then
+
+            cp -f \
+              ".dylib/libsubstrate.dylib" \
+              "$APP_PATH/libsubstrate.dylib"
+
+            cp -f \
+              ".dylib/libsubstrate.dylib" \
+              "$APP_PATH/Frameworks/libsubstrate.dylib"
+
+          fi
+
+          # ------------------------------------------------------------------
+          # Frameworks
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Copying frameworks"
+          echo "========================================"
+
+          find .dylib \
+            -maxdepth 1 \
+            -type d \
+            -name "*.framework" \
+            -exec cp -a {} "$APP_PATH/Frameworks/" \;
+
+          # ------------------------------------------------------------------
+          # Main executable
+          # ------------------------------------------------------------------
+
+          EXECUTABLE="$(
+            /usr/bin/python3 -c '
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as f:
+    plist = plistlib.load(f)
+
+print(plist["CFBundleExecutable"])
+' "$APP_PATH/Info.plist"
+          )"
+
           EXECUTABLE_PATH="$APP_PATH/$EXECUTABLE"
 
-          echo "Executable: $EXECUTABLE_PATH"
-          echo "Detecting dylibs automatically..."
+          echo ""
+          echo "Executable:"
+          echo "$EXECUTABLE_PATH"
 
-          mapfile -t ALL_DYLIBS < <(find .dylib -maxdepth 1 -type f -name "*.dylib" -printf "%f\n" | sort)
+          if [ ! -f "$EXECUTABLE_PATH" ]; then
+            echo "::error::Main executable not found."
+            exit 1
+          fi
+
+          # ------------------------------------------------------------------
+          # Find dylibs
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Detecting dylibs"
+          echo "========================================"
+
+          mapfile -t ALL_DYLIBS < <(
+            find .dylib \
+              -maxdepth 1 \
+              -type f \
+              -name "*.dylib" \
+              -printf "%f\n" |
+            sort
+          )
 
           if [ "${#ALL_DYLIBS[@]}" -eq 0 ]; then
-            echo "No dylibs found in .dylib/"
+            echo "::error::No dylibs found in .dylib/."
             exit 1
           fi
 
           echo "Found dylibs:"
           printf '%s\n' "${ALL_DYLIBS[@]}"
 
+          # ------------------------------------------------------------------
+          # Excluded dylibs
+          # ------------------------------------------------------------------
+
           SAFE_EXCLUDE_DYLIBS=(
           )
+
+          # ------------------------------------------------------------------
+          # Priority dylibs
+          # ------------------------------------------------------------------
 
           PRIORITY_DYLIBS=(
             "libsubstrate.dylib"
             "zxPluginsInject.dylib"
           )
 
+          # ------------------------------------------------------------------
+          # Filter dylibs
+          # ------------------------------------------------------------------
+
           FILTERED_DYLIBS=()
+
           for lib in "${ALL_DYLIBS[@]}"; do
+
             skip=0
+
             for excluded in "${SAFE_EXCLUDE_DYLIBS[@]}"; do
+
               if [ "$lib" = "$excluded" ]; then
+
                 skip=1
+
                 echo "Skipping excluded dylib: $lib"
+
                 break
               fi
+
             done
+
             if [ "$skip" -eq 0 ]; then
               FILTERED_DYLIBS+=("$lib")
             fi
+
           done
 
           if [ "${#FILTERED_DYLIBS[@]}" -eq 0 ]; then
-            echo "All dylibs were excluded; nothing to inject"
+            echo "::error::All dylibs were excluded."
             exit 1
           fi
+
+          # ------------------------------------------------------------------
+          # Build injection order
+          # ------------------------------------------------------------------
 
           ORDERED_DYLIBS=()
 
           for priority in "${PRIORITY_DYLIBS[@]}"; do
+
             for lib in "${FILTERED_DYLIBS[@]}"; do
+
               if [ "$lib" = "$priority" ]; then
                 ORDERED_DYLIBS+=("$lib")
               fi
+
             done
+
           done
 
           for lib in "${FILTERED_DYLIBS[@]}"; do
+
             already_added=0
+
             for added in "${ORDERED_DYLIBS[@]}"; do
+
               if [ "$lib" = "$added" ]; then
                 already_added=1
                 break
               fi
+
             done
+
             if [ "$already_added" -eq 0 ]; then
               ORDERED_DYLIBS+=("$lib")
             fi
+
           done
 
-          echo "Injection order:"
+          echo ""
+          echo "========================================"
+          echo "Injection order"
+          echo "========================================"
+
           printf '%s\n' "${ORDERED_DYLIBS[@]}"
 
-          echo "Injecting dylibs..."
+          # ------------------------------------------------------------------
+          # Inject dylibs
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Injecting dylibs"
+          echo "========================================"
+
           for lib in "${ORDERED_DYLIBS[@]}"; do
+
             LIB_PATH="@executable_path/Frameworks/$lib"
-            echo "Inject: $LIB_PATH"
-            insert-dylib --all-yes --inplace "$LIB_PATH" "$EXECUTABLE_PATH"
+
+            echo "Injecting: $LIB_PATH"
+
+            insert-dylib \
+              --all-yes \
+              --inplace \
+              "$LIB_PATH" \
+              "$EXECUTABLE_PATH"
+
           done
+
+          # ------------------------------------------------------------------
+          # Locate ldid
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Locating ldid"
+          echo "========================================"
 
           if command -v ldid >/dev/null 2>&1; then
+
             LDID_BIN="$(command -v ldid)"
-          elif [ -n "${THEOS:-}" ] && [ -x "${THEOS}/toolchain/linux/iphone/bin/ldid" ]; then
+
+          elif [ -n "${THEOS:-}" ] &&
+               [ -x "${THEOS}/toolchain/linux/iphone/bin/ldid" ]; then
+
             LDID_BIN="${THEOS}/toolchain/linux/iphone/bin/ldid"
-          elif [ -n "${THEOS:-}" ] && [ -x "${THEOS}/bin/ldid" ]; then
+
+          elif [ -n "${THEOS:-}" ] &&
+               [ -x "${THEOS}/bin/ldid" ]; then
+
             LDID_BIN="${THEOS}/bin/ldid"
+
           else
-            echo "ldid not found"
+
+            echo "::error::ldid not found."
             exit 1
+
           fi
 
-          echo "Using ldid: $LDID_BIN"
+          echo "Using ldid:"
+          echo "$LDID_BIN"
 
-          echo "Signing dylibs in Frameworks..."
+          # ------------------------------------------------------------------
+          # Sign dylibs
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Signing dylibs"
+          echo "========================================"
+
           for lib in "${ORDERED_DYLIBS[@]}"; do
+
             if [ -f "$APP_PATH/Frameworks/$lib" ]; then
-              "$LDID_BIN" -S "$APP_PATH/Frameworks/$lib"
+
+              echo "Signing Frameworks/$lib"
+
+              "$LDID_BIN" \
+                -S \
+                "$APP_PATH/Frameworks/$lib"
+
             fi
+
           done
 
+          # ------------------------------------------------------------------
+          # Sign libsubstrate
+          # ------------------------------------------------------------------
+
           if [ -f "$APP_PATH/libsubstrate.dylib" ]; then
+
             echo "Signing root libsubstrate.dylib..."
-            "$LDID_BIN" -S "$APP_PATH/libsubstrate.dylib"
+
+            "$LDID_BIN" \
+              -S \
+              "$APP_PATH/libsubstrate.dylib"
+
           fi
 
           if [ -f "$APP_PATH/Frameworks/libsubstrate.dylib" ]; then
+
             echo "Signing Frameworks/libsubstrate.dylib..."
-            "$LDID_BIN" -S "$APP_PATH/Frameworks/libsubstrate.dylib"
+
+            "$LDID_BIN" \
+              -S \
+              "$APP_PATH/Frameworks/libsubstrate.dylib"
+
           fi
 
-          echo "Signing framework binaries if present..."
-          find "$APP_PATH/Frameworks" -maxdepth 2 -type f | while read -r bin; do
+          # ------------------------------------------------------------------
+          # Sign framework binaries
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "Signing framework binaries..."
+
+          find "$APP_PATH/Frameworks" \
+            -maxdepth 2 \
+            -type f |
+          while read -r bin; do
+
             case "$bin" in
+
               *.framework/*)
-                "$LDID_BIN" -S "$bin" || true
+
+                echo "Signing framework binary: $bin"
+
+                "$LDID_BIN" \
+                  -S \
+                  "$bin" ||
+                  true
+
                 ;;
+
             esac
+
           done
 
-          echo "Signing main executable..."
-          "$LDID_BIN" -S "$EXECUTABLE_PATH"
+          # ------------------------------------------------------------------
+          # Sign main executable
+          # ------------------------------------------------------------------
 
-          echo "Verifying injected load commands..."
+          echo ""
+          echo "Signing main executable..."
+
+          "$LDID_BIN" \
+            -S \
+            "$EXECUTABLE_PATH"
+
+          # ------------------------------------------------------------------
+          # Verify dylibs
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Verifying injected load commands"
+          echo "========================================"
+
           if command -v llvm-objdump >/dev/null 2>&1; then
-            llvm-objdump --macho --dylibs-used "$EXECUTABLE_PATH" || true
+
+            llvm-objdump \
+              --macho \
+              --dylibs-used \
+              "$EXECUTABLE_PATH" ||
+              true
+
           else
-            echo "llvm-objdump not available, skipping dylib listing"
+
+            echo "llvm-objdump not available."
+
           fi
 
-          echo "Repacking IPA..."
+          # ------------------------------------------------------------------
+          # Repack IPA
+          # ------------------------------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "Repacking IPA"
+          echo "========================================"
+
           IPA_FILE_ABS="$(realpath "$IPA_FILE")"
+
           rm -f "$IPA_FILE_ABS"
+
           (
             cd "$WORK_DIR"
-            zip -qry "$IPA_FILE_ABS" Payload
+
+            zip \
+              -qry \
+              "$IPA_FILE_ABS" \
+              Payload
           )
 
-          echo "Patched IPA written back to: $IPA_FILE_ABS"
+          if [ ! -s "$IPA_FILE_ABS" ]; then
+            echo "::error::Repacked IPA is empty."
+            exit 1
+          fi
+
+          echo "Testing repacked IPA..."
+
+          unzip -t "$IPA_FILE_ABS" >/dev/null
+
+          echo ""
+          echo "Patched IPA written to:"
+          echo "$IPA_FILE_ABS"
+
+          ls -lh "$IPA_FILE_ABS"
+
+      # ======================================================================
+      # RENAME OUTPUT
+      # ======================================================================
 
       - name: Rename output IPA and ZIP files
         if: ${{ inputs.create_release }}
@@ -303,34 +971,72 @@ jobs:
           set -euo pipefail
 
           shopt -s nullglob
+
           for file in packages/*.ipa packages/*.zip; do
+
             [ -f "$file" ] || continue
+
             dir="$(dirname "$file")"
             base="$(basename "$file")"
+
             new="$base"
+
             new="${new//RedditFilter/RedditDeluxe}"
             new="${new//redditfilter/redditdeluxe}"
 
             if [ "$new" != "$base" ]; then
-              echo "Renaming $base -> $new"
-              mv -f "$file" "$dir/$new"
+
+              echo "Renaming:"
+              echo "$base -> $new"
+
+              mv -f \
+                "$file" \
+                "$dir/$new"
+
             else
+
               echo "No rename needed for $base"
+
             fi
+
           done
+
+      # ======================================================================
+      # HASH RELEASE FILES
+      # ======================================================================
 
       - name: Hash release files
         id: hash_files
+        if: ${{ inputs.create_release }}
+        shell: bash
         run: |
+          set -euo pipefail
+
+          if ! compgen -G "packages/*" > /dev/null; then
+            echo "::error::No release files found in packages/."
+            exit 1
+          fi
+
           echo 'hashes<<EOF' >> "$GITHUB_OUTPUT"
-          echo "$(sha256sum packages/*)" >> "$GITHUB_OUTPUT"
+
+          sha256sum packages/* >> "$GITHUB_OUTPUT"
+
           echo 'EOF' >> "$GITHUB_OUTPUT"
+
+      # ======================================================================
+      # UPLOAD ARTIFACTS
+      # ======================================================================
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: RedditDeluxe_${{ steps.package_info.outputs.version }}
           path: packages/*
+          if-no-files-found: error
+
+      # ======================================================================
+      # CREATE RELEASE
+      # ======================================================================
 
       - name: Create release
         if: ${{ inputs.create_release }}
@@ -339,4 +1045,13 @@ jobs:
           draft: true
           files: packages/*
           tag_name: v${{ steps.ipa_info.outputs.version }}-${{ steps.package_info.outputs.version }}
-          body: ${{ steps.hash_files.outputs.hashes }}
+          body: |
+            # RedditDeluxe
+
+            Reddit version: ${{ steps.ipa_info.outputs.version }}
+
+            RedditDeluxe version: ${{ steps.package_info.outputs.version }}
+
+            ## SHA-256
+
+            ${{ steps.hash_files.outputs.hashes }}
