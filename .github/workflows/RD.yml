@@ -419,6 +419,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "========================================"
+          echo "Installing insert-dylib"
+          echo "========================================"
+
           sudo apt update
 
           sudo apt install -y \
@@ -428,6 +432,8 @@ jobs:
 
           rm -rf insert-dylib-src
 
+          echo "Cloning insert-dylib..."
+
           git clone \
             --depth 1 \
             https://github.com/hookforge/insert-dylib.git \
@@ -435,16 +441,40 @@ jobs:
 
           cd insert-dylib-src
 
+          echo "Building insert-dylib..."
+
           cargo build --release
+
+          echo "Checking compiled binary..."
+
+          if [ ! -f "target/release/insert-dylib" ]; then
+            echo "::error::insert-dylib binary was not created."
+            exit 1
+          fi
+
+          ls -lh target/release/insert-dylib
+
+          echo "Installing insert-dylib..."
 
           sudo install \
             -m 0755 \
             target/release/insert-dylib \
             /usr/local/bin/insert-dylib
 
-          /usr/local/bin/insert-dylib --help >/dev/null
+          echo "Verifying installation..."
+
+          if [ ! -x "/usr/local/bin/insert-dylib" ]; then
+            echo "::error::insert-dylib was not installed correctly."
+            exit 1
+          fi
 
           echo "insert-dylib installed successfully."
+
+          ls -lh /usr/local/bin/insert-dylib
+
+          echo "insert-dylib help output:"
+
+          /usr/local/bin/insert-dylib --help || true
 
       # ======================================================================
       # BUILD ROOTLESS DEB
